@@ -92,6 +92,20 @@ function App() {
     };
   }, [state.pdfDoc, state.currentPage, state.rotationMap, state.zoom, state.status]);
 
+  const handleSave = useCallback(async () => {
+    if (!originalBuffer) return;
+    try {
+      await savePdfWithRotation(originalBuffer, state.rotationMap, {
+        fileName: fileName || "rotated.pdf",
+        enableFallbackOpen: true,
+      });
+      setMessage(null);
+    } catch (error) {
+      const text = error instanceof Error ? error.message : "保存に失敗しました";
+      setMessage(text);
+    }
+  }, [originalBuffer, state.rotationMap, fileName]);
+
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
@@ -144,20 +158,6 @@ function App() {
     setOcrError(null);
     setOcrLoading(false);
     setRenderState("idle");
-  };
-
-  const handleSave = async () => {
-    if (!originalBuffer) return;
-    try {
-      await savePdfWithRotation(originalBuffer, state.rotationMap, {
-        fileName: fileName || "rotated.pdf",
-        enableFallbackOpen: true,
-      });
-      setMessage(null);
-    } catch (error) {
-      const text = error instanceof Error ? error.message : "保存に失敗しました";
-      setMessage(text);
-    }
   };
 
   const handleDetectOrientation = async () => {
