@@ -1,4 +1,6 @@
 import cors from "cors";
+import fs from "node:fs";
+import path from "node:path";
 import dotenv from "dotenv";
 import express, { type Application } from "express";
 import rateLimit from "express-rate-limit";
@@ -17,6 +19,7 @@ export type AppConfig = {
   corsOrigin: string;
   ocrEnabled: boolean;
   ocrTimeoutMs: number;
+  staticDir: string;
 };
 
 type CreateAppOptions = {
@@ -38,10 +41,14 @@ class RequestError extends Error {
 
 const buildConfig = (override?: Partial<AppConfig>): AppConfig => {
   const ocrEnabledEnv = process.env.OCR_ENABLED ?? "true";
+  const fallbackStaticDir = path.resolve(__dirname, "../public");
   return {
     corsOrigin: process.env.CORS_ORIGIN ?? "*",
     ocrEnabled: ocrEnabledEnv.toLowerCase() !== "false",
     ocrTimeoutMs: Number(process.env.OCR_TIMEOUT_MS ?? 1500),
+    staticDir: override?.staticDir
+      ?? process.env.STATIC_DIR
+      ?? fallbackStaticDir,
     ...override,
   };
 };
@@ -120,6 +127,7 @@ export const createApp = ({ detector, config }: CreateAppOptions = {}): Applicat
     transports: [new transports.Console()],
   });
   const ocrDetector = detector ?? createTesseractDetector();
+  const staticDir = resolvedConfig.staticDir;
 
   const upload = multer({
     storage: multer.memoryStorage(),
@@ -186,6 +194,20 @@ export const createApp = ({ detector, config }: CreateAppOptions = {}): Applicat
       next(error);
     }
   });
+
+  const staticIndexPath = staticDir ? path.join(staticDir, "index.html") : null;
+  const hasStatic = staticIndexPath ? fs.existsSync(staticIndexPath) : false;
+  if (hasStatic && staticDir && staticIndexPath) {
+    const indexPath = staticIndexPath;
+    app.use(express.static(staticDir));
+    app.use((req, res, next) => {
+      if (req.path.startsWith("/api/")) {
+        next();
+        return;
+      }
+      res.sendFile(indexPath);
+    });
+  }
 
   app.use(
     (
