@@ -49,8 +49,13 @@ function App() {
     setOcrSuggestion(null);
     setOcrError(null);
     const buffer = await file.arrayBuffer();
-    setOriginalBuffer(buffer);
+    setOriginalBuffer(null);
     await loadFromArrayBuffer(buffer);
+    if (state.status === "error") {
+      setOriginalBuffer(null);
+      return;
+    }
+    setOriginalBuffer(buffer);
   };
 
   const handleFileInput = async (event: ChangeEvent<HTMLInputElement>) => {
@@ -93,7 +98,10 @@ function App() {
   }, [state.pdfDoc, state.currentPage, state.rotationMap, state.zoom, state.status]);
 
   const handleSave = useCallback(async () => {
-    if (!originalBuffer) return;
+    if (!originalBuffer || originalBuffer.byteLength === 0 || state.status !== "ready") {
+      setMessage("PDFが読み込まれていません");
+      return;
+    }
     try {
       await savePdfWithRotation(originalBuffer, state.rotationMap, {
         fileName: fileName || "rotated.pdf",
@@ -104,7 +112,13 @@ function App() {
       const text = error instanceof Error ? error.message : "保存に失敗しました";
       setMessage(text);
     }
-  }, [originalBuffer, state.rotationMap, fileName]);
+  }, [originalBuffer, state.rotationMap, state.status, fileName]);
+
+  useEffect(() => {
+    if (state.status === "error") {
+      setOriginalBuffer(null);
+    }
+  }, [state.status]);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -252,11 +266,8 @@ function App() {
             <div className="viewer__actions">
               <button
                 className="save-btn"
-              onClick={() =>
-                  originalBuffer
-                  && handleSave()
-                }
-                disabled={!originalBuffer || state.status === "loading"}
+                onClick={() => handleSave()}
+                disabled={!originalBuffer || state.status !== "ready"}
               >
                 適用して保存 (Ctrl+S)
               </button>
