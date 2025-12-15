@@ -49,12 +49,7 @@ function App() {
     setOcrSuggestion(null);
     setOcrError(null);
     const buffer = await file.arrayBuffer();
-    setOriginalBuffer(null);
     await loadFromArrayBuffer(buffer);
-    if (state.status === "error") {
-      setOriginalBuffer(null);
-      return;
-    }
     setOriginalBuffer(buffer);
   };
 
