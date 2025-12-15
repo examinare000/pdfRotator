@@ -1,8 +1,8 @@
 import { useCallback, useState } from "react";
-import type { PdfDocumentProxy } from "../lib/pdf";
+import type { PdfDocumentProxy, PdfLoader } from "../lib/pdf";
 import { applyRotationChange, clampPageNumber, type PageRotationMap } from "../lib/rotation";
 
-export type ViewerStatus = "idle" | "ready";
+export type ViewerStatus = "idle" | "loading" | "ready" | "error";
 
 export type ViewerState = {
   status: ViewerStatus;
@@ -11,16 +11,22 @@ export type ViewerState = {
   currentPage: number;
   rotationMap: PageRotationMap;
   zoom: number;
+  errorMessage: string | null;
 };
 
 export type ViewerControls = {
   loadDocument: (doc: PdfDocumentProxy) => void;
+  loadFromArrayBuffer: (buffer: ArrayBuffer, options?: { workerSrc?: string }) => Promise<void>;
   setPage: (page: number) => void;
   nextPage: () => void;
   prevPage: () => void;
   rotateCurrentPage: (delta: number) => void;
   setZoom: (zoom: number) => void;
   reset: () => void;
+};
+
+type UseViewerStateOptions = {
+  loader?: PdfLoader;
 };
 
 const INITIAL_STATE: ViewerState = {
@@ -30,6 +36,7 @@ const INITIAL_STATE: ViewerState = {
   currentPage: 1,
   rotationMap: {},
   zoom: 1,
+  errorMessage: null,
 };
 
 const MIN_ZOOM = 0.25;
@@ -44,8 +51,11 @@ const clampZoom = (value: number): number => {
   return value;
 };
 
-export const useViewerState = (): { state: ViewerState } & ViewerControls => {
+export const useViewerState = (
+  options: UseViewerStateOptions = {}
+): { state: ViewerState } & ViewerControls => {
   const [state, setState] = useState<ViewerState>(INITIAL_STATE);
+  const loader = options.loader;
 
   const loadDocument = useCallback((doc: PdfDocumentProxy) => {
     if (!doc || !Number.isFinite(doc.numPages) || doc.numPages < 1) {
@@ -58,8 +68,35 @@ export const useViewerState = (): { state: ViewerState } & ViewerControls => {
       currentPage: 1,
       rotationMap: {},
       zoom: 1,
+      errorMessage: null,
     });
   }, []);
+
+  const loadFromArrayBuffer = useCallback(
+    async (buffer: ArrayBuffer, extraOptions?: { workerSrc?: string }) => {
+      if (!loader) {
+        throw new Error("PDFローダーが設定されていません");
+      }
+      setState((prev) => ({ ...prev, status: "loading", errorMessage: null }));
+      try {
+        const doc = await loader.loadFromArrayBuffer(buffer, extraOptions);
+        loadDocument(doc);
+      } catch (error) {
+        const message =
+          error instanceof Error && error.message ? error.message : "PDFの読み込みに失敗しました";
+        setState((prev) => ({
+          ...prev,
+          status: "error",
+          errorMessage: message,
+          pdfDoc: null,
+          numPages: 0,
+          currentPage: 1,
+          rotationMap: {},
+        }));
+      }
+    },
+    [loader, loadDocument]
+  );
 
   const setPage = useCallback((page: number) => {
     setState((prev) => {
@@ -101,6 +138,7 @@ export const useViewerState = (): { state: ViewerState } & ViewerControls => {
   return {
     state,
     loadDocument,
+    loadFromArrayBuffer,
     setPage,
     nextPage,
     prevPage,

@@ -8,6 +8,10 @@ const makeDoc = (numPages = 3): PdfDocumentProxy => ({
   getPage: vi.fn(),
 });
 
+const makeLoader = (doc: PdfDocumentProxy) => ({
+  loadFromArrayBuffer: vi.fn().mockResolvedValue(doc),
+});
+
 describe("useViewerState", () => {
   it("初期状態はidleでページ1、回転マップは空", () => {
     const { result } = renderHook(() => useViewerState());
@@ -26,6 +30,38 @@ describe("useViewerState", () => {
     expect(result.current.state.status).toBe("ready");
     expect(result.current.state.numPages).toBe(2);
     expect(result.current.state.currentPage).toBe(1);
+  });
+
+  it("ArrayBufferロード成功時にreadyになる", async () => {
+    const doc = makeDoc(4);
+    const loader = makeLoader(doc);
+    const buffer = new Uint8Array([1, 2]).buffer;
+    const { result } = renderHook(() => useViewerState({ loader }));
+
+    await act(async () => {
+      await result.current.loadFromArrayBuffer(buffer);
+    });
+
+    expect(loader.loadFromArrayBuffer).toHaveBeenCalledWith(buffer, undefined);
+    expect(result.current.state.status).toBe("ready");
+    expect(result.current.state.numPages).toBe(4);
+    expect(result.current.state.errorMessage).toBeNull();
+  });
+
+  it("ArrayBufferロード失敗時はerrorになる", async () => {
+    const loader = {
+      loadFromArrayBuffer: vi.fn().mockRejectedValue(new Error("読み込み失敗")),
+    };
+    const buffer = new Uint8Array([1]).buffer;
+    const { result } = renderHook(() => useViewerState({ loader }));
+
+    await act(async () => {
+      await result.current.loadFromArrayBuffer(buffer);
+    });
+
+    expect(result.current.state.status).toBe("error");
+    expect(result.current.state.errorMessage).toBe("読み込み失敗");
+    expect(result.current.state.pdfDoc).toBeNull();
   });
 
   it("ページ数が0以下の文書はエラーにする", () => {
