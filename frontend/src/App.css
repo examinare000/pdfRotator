@@ -242,6 +242,13 @@ button:disabled {
   font-weight: 600;
 }
 
+.save-btn {
+  margin-top: 8px;
+  width: 100%;
+  background: linear-gradient(135deg, #0ea5e9, #2563eb);
+  border: none;
+}
+
 @media (max-width: 960px) {
   .viewer {
     grid-template-columns: 1fr;

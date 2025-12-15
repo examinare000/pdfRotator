@@ -3,6 +3,7 @@ import { createPdfJsDistLoader } from "./lib/pdfjs";
 import workerSrc from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { useViewerState } from "./hooks/useViewerState";
 import { renderPageToCanvas } from "./lib/pdf";
+import { savePdfWithRotation } from "./lib/pdf-save";
 import "./App.css";
 
 const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
@@ -24,6 +25,7 @@ function App() {
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [fileName, setFileName] = useState<string>("");
+  const [originalBuffer, setOriginalBuffer] = useState<ArrayBuffer | null>(null);
   const [renderState, setRenderState] = useState<RenderState>("idle");
   const [message, setMessage] = useState<string | null>(null);
 
@@ -39,6 +41,7 @@ function App() {
     setMessage(null);
     setFileName(file.name);
     const buffer = await file.arrayBuffer();
+    setOriginalBuffer(buffer);
     await loadFromArrayBuffer(buffer);
   };
 
@@ -106,6 +109,15 @@ function App() {
         case "ArrowUp":
           e.preventDefault();
           prevPage();
+          break;
+        case "s":
+        case "S":
+          if (e.ctrlKey || e.metaKey) {
+            e.preventDefault();
+            if (originalBuffer) {
+              void savePdfWithRotation(originalBuffer, state.rotationMap, { fileName: "rotated.pdf" });
+            }
+          }
           break;
         default:
           break;
@@ -206,7 +218,15 @@ function App() {
             <span>→: +90° 回転して次ページ</span>
             <span>←: -90° 回転して次ページ</span>
             <span>↓: 次ページ / ↑: 前ページ</span>
+            <span>Ctrl+S / Cmd+S: 回転を適用して保存</span>
           </div>
+          <button
+            className="save-btn"
+            onClick={() => originalBuffer && savePdfWithRotation(originalBuffer, state.rotationMap, { fileName })}
+            disabled={!originalBuffer || state.status === "loading"}
+          >
+            保存 (Ctrl+S)
+          </button>
         </div>
       </section>
     </div>
