@@ -123,7 +123,7 @@ function App() {
           if (e.ctrlKey || e.metaKey) {
             e.preventDefault();
             if (originalBuffer) {
-              void savePdfWithRotation(originalBuffer, state.rotationMap, { fileName: "rotated.pdf" });
+              void savePdfWithRotation(originalBuffer, state.rotationMap, { fileName: fileName || "rotated.pdf" });
             }
           }
           break;
@@ -133,7 +133,7 @@ function App() {
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [state.status, rotateCurrentPage, nextPage, prevPage]);
+  }, [state.status, rotateCurrentPage, nextPage, prevPage, originalBuffer, state.rotationMap, fileName]);
 
   const handleReset = () => {
     reset();
