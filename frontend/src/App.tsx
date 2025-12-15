@@ -123,7 +123,7 @@ function App() {
           if (e.ctrlKey || e.metaKey) {
             e.preventDefault();
             if (originalBuffer) {
-              void savePdfWithRotation(originalBuffer, state.rotationMap, { fileName: fileName || "rotated.pdf" });
+              void handleSave();
             }
           }
           break;
@@ -133,7 +133,7 @@ function App() {
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [state.status, rotateCurrentPage, nextPage, prevPage, originalBuffer, state.rotationMap, fileName]);
+  }, [state.status, rotateCurrentPage, nextPage, prevPage, originalBuffer, state.rotationMap, fileName, handleSave]);
 
   const handleReset = () => {
     reset();
@@ -144,6 +144,20 @@ function App() {
     setOcrError(null);
     setOcrLoading(false);
     setRenderState("idle");
+  };
+
+  const handleSave = async () => {
+    if (!originalBuffer) return;
+    try {
+      await savePdfWithRotation(originalBuffer, state.rotationMap, {
+        fileName: fileName || "rotated.pdf",
+        enableFallbackOpen: true,
+      });
+      setMessage(null);
+    } catch (error) {
+      const text = error instanceof Error ? error.message : "保存に失敗しました";
+      setMessage(text);
+    }
   };
 
   const handleDetectOrientation = async () => {
@@ -238,11 +252,9 @@ function App() {
             <div className="viewer__actions">
               <button
                 className="save-btn"
-                onClick={() =>
+              onClick={() =>
                   originalBuffer
-                  && savePdfWithRotation(originalBuffer, state.rotationMap, {
-                    fileName: fileName || "rotated.pdf",
-                  })
+                  && handleSave()
                 }
                 disabled={!originalBuffer || state.status === "loading"}
               >

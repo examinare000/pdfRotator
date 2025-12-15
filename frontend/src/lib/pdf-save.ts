@@ -4,6 +4,11 @@ import type { PageRotationMap } from "./rotation";
 
 export type SaveOptions = {
   fileName?: string;
+  /**
+   * 保存ダイアログがブロックされた場合に新規タブで開くフォールバックを有効化する
+   * Safari/一部の環境では有効になる
+   */
+  enableFallbackOpen?: boolean;
 };
 
 export const savePdfWithRotation = async (
@@ -27,5 +32,18 @@ export const savePdfWithRotation = async (
   const bytes = await pdfDoc.save();
   const blob = new Blob([bytes], { type: "application/pdf" });
   const fileName = options.fileName ?? "rotated.pdf";
-  saveAs(blob, fileName);
+
+  try {
+    saveAs(blob, fileName);
+  } catch (error) {
+    if (options.enableFallbackOpen) {
+      const url = URL.createObjectURL(blob);
+      const opened = window.open(url, "_blank");
+      if (!opened) {
+        throw error;
+      }
+      return;
+    }
+    throw error;
+  }
 };
