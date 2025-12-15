@@ -83,4 +83,24 @@ describe("renderPageToCanvas", () => {
 
     expect(page.getViewport).toHaveBeenCalledWith({ scale: 2, rotation: 0 });
   });
+
+  it("viewportに合わせてキャンバスのサイズを設定する", async () => {
+    const viewport = { width: 640, height: 480 };
+    const render = vi.fn().mockReturnValue({ promise: Promise.resolve() });
+    const page = {
+      getViewport: vi.fn().mockReturnValue(viewport),
+      render,
+    };
+    const canvas = {
+      width: 0,
+      height: 0,
+      getContext: vi.fn().mockReturnValue({}),
+    } as unknown as HTMLCanvasElement;
+
+    await renderPageToCanvas(page as any, canvas, { scale: 1 });
+
+    expect(canvas.width).toBe(640);
+    expect(canvas.height).toBe(480);
+    expect(render).toHaveBeenCalled();
+  });
 });

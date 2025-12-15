@@ -164,6 +164,32 @@ h1 {
   gap: 8px;
 }
 
+.ocr-status {
+  margin-top: 6px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px dashed #cbd5e1;
+  background: #f8fafc;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ocr-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.label.inline {
+  display: inline-flex;
+  align-items: center;
+  margin: 0;
+}
+
 .button-row {
   display: inline-flex;
   align-items: center;

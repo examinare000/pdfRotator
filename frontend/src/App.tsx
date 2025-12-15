@@ -4,6 +4,7 @@ import workerSrc from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { useViewerState } from "./hooks/useViewerState";
 import { renderPageToCanvas } from "./lib/pdf";
 import { savePdfWithRotation } from "./lib/pdf-save";
+import { detectOrientationForPage, type OrientationSuggestion } from "./lib/ocr";
 import "./App.css";
 
 const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
@@ -28,6 +29,11 @@ function App() {
   const [originalBuffer, setOriginalBuffer] = useState<ArrayBuffer | null>(null);
   const [renderState, setRenderState] = useState<RenderState>("idle");
   const [message, setMessage] = useState<string | null>(null);
+  const [ocrSuggestion, setOcrSuggestion] = useState<(OrientationSuggestion & { page: number }) | null>(
+    null
+  );
+  const [ocrError, setOcrError] = useState<string | null>(null);
+  const [ocrLoading, setOcrLoading] = useState(false);
 
   const handleFile = async (file: File) => {
     if (file.type !== "application/pdf") {
@@ -40,6 +46,8 @@ function App() {
     }
     setMessage(null);
     setFileName(file.name);
+    setOcrSuggestion(null);
+    setOcrError(null);
     const buffer = await file.arrayBuffer();
     setOriginalBuffer(buffer);
     await loadFromArrayBuffer(buffer);
@@ -127,6 +135,57 @@ function App() {
     return () => window.removeEventListener("keydown", handler);
   }, [state.status, rotateCurrentPage, nextPage, prevPage]);
 
+  const handleReset = () => {
+    reset();
+    setOriginalBuffer(null);
+    setFileName("");
+    setMessage(null);
+    setOcrSuggestion(null);
+    setOcrError(null);
+    setOcrLoading(false);
+    setRenderState("idle");
+  };
+
+  const handleDetectOrientation = async () => {
+    if (!state.pdfDoc) {
+      setOcrError("PDFを読み込んでから実行してください");
+      return;
+    }
+    setOcrLoading(true);
+    setOcrError(null);
+    try {
+      const suggestion = await detectOrientationForPage(state.pdfDoc, state.currentPage, { fetcher: fetch });
+      setOcrSuggestion(suggestion);
+    } catch (error) {
+      const text = error instanceof Error ? error.message : "OCRの推定に失敗しました";
+      setOcrSuggestion(null);
+      setOcrError(text);
+    } finally {
+      setOcrLoading(false);
+    }
+  };
+
+  const handleApplySuggestion = () => {
+    if (!ocrSuggestion || ocrSuggestion.rotation === null) {
+      return;
+    }
+    if (ocrSuggestion.page !== state.currentPage) {
+      setOcrError("推定結果が現在のページと一致しません");
+      return;
+    }
+    const currentRotation = state.rotationMap[state.currentPage] ?? 0;
+    const delta = ocrSuggestion.rotation - currentRotation;
+    rotateCurrentPage(delta);
+    setOcrError(null);
+  };
+
+  const suggestionText =
+    ocrSuggestion && state.pdfDoc
+      ? ocrSuggestion.rotation === null
+        ? "向きを特定できませんでした"
+        : `${ocrSuggestion.rotation}° / 信頼度 ${ocrSuggestion.confidence.toFixed(2)}`
+      : "未推定";
+
   return (
     <div className="app">
       <header className="app__header">
@@ -137,7 +196,7 @@ function App() {
             PDFを読み込み、ページごとの回転とページ移動をキーボード/ボタンで操作できます。
           </p>
         </div>
-        <button className="reset-btn" onClick={reset}>
+        <button className="reset-btn" onClick={handleReset}>
           状態をリセット
         </button>
       </header>
@@ -183,6 +242,42 @@ function App() {
           </div>
         </div>
         <div className="controls__group">
+          <p className="label">OCR向き推定</p>
+          <div className="button-row">
+            <button
+              onClick={handleDetectOrientation}
+              disabled={state.status !== "ready" || ocrLoading}
+            >
+              {ocrLoading ? "推定中..." : "向き推定"}
+            </button>
+            <button
+              onClick={handleApplySuggestion}
+              disabled={
+                state.status !== "ready"
+                || !ocrSuggestion
+                || ocrSuggestion.rotation === null
+                || ocrSuggestion.page !== state.currentPage
+              }
+            >
+              提案を適用
+            </button>
+          </div>
+          <div className="ocr-status">
+            <div className="ocr-summary">
+              <span className="label inline">推定</span>
+              <span>{suggestionText}</span>
+              {ocrSuggestion?.processingMs !== undefined && (
+                <span className="pill pill--render">処理 {ocrSuggestion.processingMs}ms</span>
+              )}
+            </div>
+            <p className="hint">現在のページを画像化し、サーバーで向きを推定します。</p>
+            {ocrSuggestion && (
+              <p className="hint">推定対象ページ: {ocrSuggestion.page}</p>
+            )}
+            {ocrError && <span className="error-text">{ocrError}</span>}
+          </div>
+        </div>
+        <div className="controls__group">
           <p className="label">回転</p>
           <div className="button-row">
             <button onClick={() => rotateCurrentPage(-90)} disabled={state.status !== "ready"}>
@@ -222,7 +317,12 @@ function App() {
           </div>
           <button
             className="save-btn"
-            onClick={() => originalBuffer && savePdfWithRotation(originalBuffer, state.rotationMap, { fileName })}
+            onClick={() =>
+              originalBuffer
+              && savePdfWithRotation(originalBuffer, state.rotationMap, {
+                fileName: fileName || "rotated.pdf",
+              })
+            }
             disabled={!originalBuffer || state.status === "loading"}
           >
             保存 (Ctrl+S)
