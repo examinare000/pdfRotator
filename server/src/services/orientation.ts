@@ -30,6 +30,17 @@ export type CreateTesseractDetectorOptions = {
   rotate?: RotateFn;
 };
 
+const normalizeRotation = (degrees: number | null | undefined): Orientation => {
+  if (degrees === null || degrees === undefined || Number.isNaN(degrees)) {
+    return null;
+  }
+  const normalized = ((Math.round(degrees / 90) * 90) % 360 + 360) % 360;
+  if (normalized === 0 || normalized === 90 || normalized === 180 || normalized === 270) {
+    return normalized as Orientation;
+  }
+  return null;
+};
+
 const normalizeTextSample = (text: string | null | undefined): string | undefined => {
   if (!text) {
     return undefined;
@@ -70,6 +81,65 @@ const chooseBestOrientation = (
   return { rotation: best.orientation, confidence, textSample: normalizeTextSample(best.text) };
 };
 
+const detectWithSweep = async (
+  buffer: Buffer,
+  signal: AbortSignal | undefined,
+  recognizeFn: RecognizeFn,
+  rotateFn: RotateFn
+): Promise<OrientationResult> => {
+  const candidates: Array<Exclude<Orientation, null>> = [0, 90, 180, 270];
+  const counts: Array<{ orientation: Exclude<Orientation, null>; count: number; text?: string }> = [];
+
+  for (const orientation of candidates) {
+    if (signal?.aborted) {
+      throw new Error("OCR処理が中断されました");
+    }
+
+    try {
+      const rotatedBuffer = await rotateFn(buffer, orientation);
+      const { data } = await recognizeFn(rotatedBuffer);
+      const text = data?.text;
+      const count = countRecognizedCharacters(text);
+      counts.push({ orientation, count, text });
+    } catch (error) {
+      counts.push({ orientation, count: 0, text: undefined });
+      if (process.env.NODE_ENV !== "test") {
+        // eslint-disable-next-line no-console
+        console.warn("orientation_detect_failed", error);
+      }
+    }
+  }
+
+  return chooseBestOrientation(counts);
+};
+
+const detectWithTesseract = async (
+  buffer: Buffer,
+  signal: AbortSignal | undefined
+): Promise<OrientationResult> => {
+  if (signal?.aborted) {
+    throw new Error("OCR処理が中断されました");
+  }
+  const { data } = await Tesseract.detect(buffer);
+  const rotation = normalizeRotation(data?.orientation_degrees ?? null);
+  const confidence = data?.orientation_confidence ?? 0;
+
+  let textSample: string | undefined;
+  try {
+    const targetBuffer =
+      rotation && rotation !== 0 ? await sharp(buffer).rotate(rotation).toBuffer() : buffer;
+    const ocrResult = await Tesseract.recognize(targetBuffer);
+    textSample = normalizeTextSample(ocrResult.data?.text);
+  } catch (error) {
+    if (process.env.NODE_ENV !== "test") {
+      // eslint-disable-next-line no-console
+      console.warn("text_sample_extraction_failed", error);
+    }
+  }
+
+  return { rotation, confidence, textSample };
+};
+
 export const createTesseractDetector = ({
   recognize,
   rotate,
@@ -90,24 +160,14 @@ export const createTesseractDetector = ({
       return rotated;
     });
 
+  const hasCustomStrategy = Boolean(recognize || rotate);
+
   return {
     async detect({ buffer, signal }) {
-      const candidates: Array<Exclude<Orientation, null>> = [0, 90, 180, 270];
-      const counts: Array<{ orientation: Exclude<Orientation, null>; count: number; text?: string }> = [];
-
-      for (const orientation of candidates) {
-        if (signal?.aborted) {
-          throw new Error("OCR処理が中断されました");
-        }
-
+      if (!hasCustomStrategy) {
         try {
-          const rotatedBuffer = await rotateFn(buffer, orientation);
-          const { data } = await recognizeFn(rotatedBuffer);
-          const text = data?.text;
-          const count = countRecognizedCharacters(text);
-          counts.push({ orientation, count, text });
+          return await detectWithTesseract(buffer, signal);
         } catch (error) {
-          counts.push({ orientation, count: 0, text: undefined });
           if (process.env.NODE_ENV !== "test") {
             // eslint-disable-next-line no-console
             console.warn("orientation_detect_failed", error);
@@ -115,7 +175,7 @@ export const createTesseractDetector = ({
         }
       }
 
-      return chooseBestOrientation(counts);
+      return await detectWithSweep(buffer, signal, recognizeFn, rotateFn);
     },
   };
 };
