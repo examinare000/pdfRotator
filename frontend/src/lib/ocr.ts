@@ -16,6 +16,12 @@ export type OrientationRequestOptions = {
   endpoint?: string;
 };
 
+export type OrientationSuggestion = OrientationResponse & {
+  page: number;
+  viewport: { width: number; height: number };
+  imageBase64?: string;
+};
+
 export type RenderPageToPngOptions = {
   scale?: number;
   rotation?: number;
@@ -35,6 +41,11 @@ export type DetectOrientationParams = {
   createCanvas?: () => HTMLCanvasElement;
   render?: RenderPageToPngOptions["render"];
   request?: (payload: { imageBase64: string; threshold: number }) => Promise<OrientationResponse>;
+};
+
+export type DetectOrientationForPageOptions = OrientationRequestOptions & {
+  scale?: number;
+  rotation?: number;
 };
 
 const DEFAULT_THRESHOLD = 0.6;
@@ -112,4 +123,38 @@ export const detectOrientationFromPage = async (
   const suggestion = await requester({ imageBase64: dataUrl, threshold });
 
   return { suggestion, imageBase64: dataUrl, viewport };
+};
+
+export const detectOrientationForPage = async (
+  pdfDoc: { numPages: number; getPage: (pageNumber: number) => Promise<PdfPageProxy> },
+  pageNumber: number,
+  options: DetectOrientationForPageOptions = {}
+): Promise<OrientationSuggestion> => {
+  if (!pdfDoc) {
+    throw new Error("PDFが読み込まれていません");
+  }
+  if (!Number.isInteger(pageNumber) || pageNumber < 1 || pageNumber > pdfDoc.numPages) {
+    throw new Error("ページ番号が不正です");
+  }
+
+  const page = await pdfDoc.getPage(pageNumber);
+  const { suggestion, imageBase64, viewport } = await detectOrientationFromPage({
+    page,
+    threshold: options.threshold,
+    scale: options.scale,
+    rotation: options.rotation,
+    request: (payload) =>
+      requestOrientation(payload.imageBase64, {
+        threshold: payload.threshold,
+        fetcher: options.fetcher,
+        endpoint: options.endpoint,
+      }),
+  });
+
+  return {
+    page: pageNumber,
+    imageBase64,
+    viewport,
+    ...suggestion,
+  };
 };
