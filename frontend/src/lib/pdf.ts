@@ -15,6 +15,10 @@ export type PdfDocumentProxy = {
   getPage: (pageNumber: number) => Promise<PdfPageProxy>;
 };
 
+export type PdfLoader = {
+  loadFromArrayBuffer: (buffer: ArrayBuffer, options?: LoadOptions) => Promise<PdfDocumentProxy>;
+};
+
 export type PdfJsLike = {
   getDocument: (src: { data: ArrayBuffer }) => { promise: Promise<PdfDocumentProxy> };
   GlobalWorkerOptions?: { workerSrc?: string };
@@ -35,10 +39,7 @@ export const resolveWorkerSrc = (baseUrl?: string): string => {
   const normalizedBase = base === "" ? "/" : base;
   const trimmed = normalizedBase.endsWith("/") ? normalizedBase.slice(0, -1) : normalizedBase;
   const safeBase = trimmed === "" ? "/" : trimmed;
-  if (safeBase === "/") {
-    return "/pdf.worker.js";
-  }
-  return `${safeBase}/pdf.worker.js`;
+  return safeBase === "/" ? "/pdf.worker.js" : `${safeBase}/pdf.worker.js`;
 };
 
 export const createPdfLoader = (pdfjs: PdfJsLike) => {
@@ -53,8 +54,12 @@ export const createPdfLoader = (pdfjs: PdfJsLike) => {
         pdfjs.GlobalWorkerOptions.workerSrc = workerSrc;
       }
 
-      const task = pdfjs.getDocument({ data: buffer });
-      return await task.promise;
+      try {
+        const task = pdfjs.getDocument({ data: buffer });
+        return await task.promise;
+      } catch (error) {
+        throw new Error("PDFの読み込みに失敗しました", { cause: error as Error });
+      }
     },
   };
 };
@@ -62,8 +67,46 @@ export const createPdfLoader = (pdfjs: PdfJsLike) => {
 export type RenderOptions = {
   scale: number;
   rotation?: number;
+  maxWidth?: number;
+  maxHeight?: number;
   maxCanvasWidth?: number;
   maxCanvasHeight?: number;
+};
+
+export const DEFAULT_MAX_CANVAS_DIMENSION = 1600;
+
+const assertPositiveNumber = (value: number, name: string): void => {
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error(`${name} は正の数で指定してください`);
+  }
+};
+
+const clampViewport = (
+  viewport: PdfPageViewport,
+  maxWidth: number,
+  maxHeight: number
+): { width: number; height: number; scale: number } => {
+  assertPositiveNumber(maxWidth, "maxWidth");
+  assertPositiveNumber(maxHeight, "maxHeight");
+  assertPositiveNumber(viewport.width, "viewport.width");
+  assertPositiveNumber(viewport.height, "viewport.height");
+
+  const widthScale = viewport.width > maxWidth ? maxWidth / viewport.width : 1;
+  const heightScale = viewport.height > maxHeight ? maxHeight / viewport.height : 1;
+  const scale = Math.min(widthScale, heightScale);
+  const appliedScale = scale < 1 ? scale : 1;
+  return {
+    width: viewport.width * appliedScale,
+    height: viewport.height * appliedScale,
+    scale: appliedScale,
+  };
+};
+
+const resolveLimit = (value?: number): number | undefined => {
+  if (Number.isFinite(value) && value > 0) {
+    return value;
+  }
+  return undefined;
 };
 
 export const renderPageToCanvas = async (
@@ -81,30 +124,77 @@ export const renderPageToCanvas = async (
   }
 
   const rotation = options.rotation ?? 0;
-  const initialViewport = page.getViewport({
+  const baseViewport = page.getViewport({
     scale: options.scale,
     rotation,
   });
 
-  const widthLimit = Number.isFinite(options.maxCanvasWidth) ? options.maxCanvasWidth : Infinity;
-  const heightLimit = Number.isFinite(options.maxCanvasHeight) ? options.maxCanvasHeight : Infinity;
-  const clampRatio = Math.min(
-    1,
-    widthLimit / initialViewport.width,
-    heightLimit / initialViewport.height
-  );
-
-  const effectiveScale = options.scale * clampRatio;
+  const maxWidth =
+    resolveLimit(options.maxWidth ?? options.maxCanvasWidth) ?? DEFAULT_MAX_CANVAS_DIMENSION;
+  const maxHeight =
+    resolveLimit(options.maxHeight ?? options.maxCanvasHeight) ?? DEFAULT_MAX_CANVAS_DIMENSION;
+  const clamped = clampViewport(baseViewport, maxWidth, maxHeight);
   const viewport =
-    clampRatio < 1
-      ? page.getViewport({ scale: effectiveScale, rotation })
-      : initialViewport;
+    clamped.scale < 1
+      ? page.getViewport({ scale: options.scale * clamped.scale, rotation })
+      : baseViewport;
 
-  // Canvasは整数ピクセルに設定する（PDF.jsの描画サイズに合わせる）
   canvas.width = Math.round(viewport.width);
   canvas.height = Math.round(viewport.height);
 
   const renderTask = page.render({ canvasContext: ctx, viewport });
   await renderTask.promise;
-  return { width: canvas.width, height: canvas.height };
+  return { width: viewport.width, height: viewport.height };
+};
+
+export type PageCache<T> = {
+  get: (pageNumber: number) => T | undefined;
+  set: (pageNumber: number, value: T) => void;
+  has: (pageNumber: number) => boolean;
+  keys: () => number[];
+  clear: () => void;
+  size: () => number;
+};
+
+export const createPageCache = <T>(maxEntries = 3): PageCache<T> => {
+  if (!Number.isInteger(maxEntries) || maxEntries < 1) {
+    throw new Error("キャッシュの上限は1以上の整数で指定してください");
+  }
+  const cache = new Map<number, T>();
+
+  const touch = (pageNumber: number, value: T) => {
+    cache.delete(pageNumber);
+    cache.set(pageNumber, value);
+  };
+
+  return {
+    get(pageNumber) {
+      const value = cache.get(pageNumber);
+      if (value !== undefined) {
+        touch(pageNumber, value);
+      }
+      return value;
+    },
+    set(pageNumber, value) {
+      touch(pageNumber, value);
+      if (cache.size > maxEntries) {
+        const oldest = cache.keys().next().value;
+        if (oldest !== undefined) {
+          cache.delete(oldest);
+        }
+      }
+    },
+    has(pageNumber) {
+      return cache.has(pageNumber);
+    },
+    keys() {
+      return Array.from(cache.keys());
+    },
+    clear() {
+      cache.clear();
+    },
+    size() {
+      return cache.size;
+    },
+  };
 };

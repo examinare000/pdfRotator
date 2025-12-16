@@ -8,6 +8,7 @@
     "build": "tsc --noEmit false",
     "start": "node dist/index.js",
     "test": "vitest run",
+    "package:win": "powershell -ExecutionPolicy Bypass -File ../scripts/package-win.ps1",
     "lint": "echo \"(add eslint once rules are defined)\""
   },
   "keywords": [],
@@ -22,6 +23,7 @@
     "helmet": "^8.1.0",
     "morgan": "^1.10.1",
     "multer": "^2.0.2",
+    "sharp": "^0.34.5",
     "tesseract.js": "^7.0.0",
     "winston": "^3.19.0"
   },

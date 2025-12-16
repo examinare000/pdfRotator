@@ -1,4 +1,6 @@
 import cors from "cors";
+import fs from "node:fs";
+import path from "node:path";
 import dotenv from "dotenv";
 import express, { type Application } from "express";
 import rateLimit from "express-rate-limit";
@@ -11,12 +13,15 @@ import { createTesseractDetector, type OrientationDetector } from "./services/or
 dotenv.config();
 
 const ALLOWED_MIME_TYPES = ["image/png", "image/jpeg", "image/jpg"];
-const MAX_FILE_SIZE = 5 * 1024 * 1024;
+const MAX_UPLOAD_MB = 50;
+const MAX_FILE_SIZE = MAX_UPLOAD_MB * 1024 * 1024;
+const BODY_LIMIT = "70mb";
 
 export type AppConfig = {
   corsOrigin: string;
   ocrEnabled: boolean;
   ocrTimeoutMs: number;
+  staticDir: string;
 };
 
 type CreateAppOptions = {
@@ -29,19 +34,26 @@ class RequestError extends Error {
 
   code: string;
 
-  constructor(status: number, code: string, message: string) {
+  retryable: boolean;
+
+  constructor(status: number, code: string, message: string, options?: { retryable?: boolean }) {
     super(message);
     this.status = status;
     this.code = code;
+    this.retryable = options?.retryable ?? false;
   }
 }
 
 const buildConfig = (override?: Partial<AppConfig>): AppConfig => {
   const ocrEnabledEnv = process.env.OCR_ENABLED ?? "true";
+  const fallbackStaticDir = path.resolve(__dirname, "../public");
   return {
     corsOrigin: process.env.CORS_ORIGIN ?? "*",
     ocrEnabled: ocrEnabledEnv.toLowerCase() !== "false",
     ocrTimeoutMs: Number(process.env.OCR_TIMEOUT_MS ?? 1500),
+    staticDir: override?.staticDir
+      ?? process.env.STATIC_DIR
+      ?? fallbackStaticDir,
     ...override,
   };
 };
@@ -80,17 +92,41 @@ const promiseWithTimeout = async <T>(promise: Promise<T>, timeoutMs: number): Pr
   }
 };
 
+const ensureUsableBuffer = (buffer: Buffer | undefined): Buffer => {
+  if (!buffer || buffer.length === 0) {
+    throw new RequestError(
+      400,
+      "empty_image",
+      "アップロードされた画像が空のようです。別のファイルで再度お試しください。",
+      { retryable: true }
+    );
+  }
+
+  if (buffer.length > MAX_FILE_SIZE) {
+    throw new RequestError(
+      413,
+      "file_too_large",
+      `ファイルサイズが大きすぎます。${MAX_UPLOAD_MB}MB以内のPNG/JPEGを選び直してください。`,
+      { retryable: true }
+    );
+  }
+
+  return buffer;
+};
+
 const extractBase64 = (raw: string): Buffer => {
   const trimmed = raw.trim();
   const content = trimmed.includes(",") ? trimmed.split(",").pop() ?? "" : trimmed;
-  if (!isBase64(content)) {
-    throw new RequestError(400, "invalid_image", "画像データが不正です");
+  if (!content || !isBase64(content)) {
+    throw new RequestError(
+      400,
+      "invalid_image",
+      "画像を読み取れませんでした。別の画像で再度お試しください。",
+      { retryable: true }
+    );
   }
   const buffer = Buffer.from(content, "base64");
-  if (!buffer.length) {
-    throw new RequestError(400, "invalid_image", "画像データが不正です");
-  }
-  return buffer;
+  return ensureUsableBuffer(buffer);
 };
 
 const extractImagePayload = (req: express.Request) => {
@@ -98,10 +134,7 @@ const extractImagePayload = (req: express.Request) => {
     if (!ALLOWED_MIME_TYPES.includes(req.file.mimetype)) {
       throw new RequestError(400, "unsupported_mime", "対応していない画像形式です");
     }
-    if (!req.file.buffer?.length) {
-      throw new RequestError(400, "invalid_image", "画像データが不正です");
-    }
-    return { buffer: req.file.buffer, mimeType: req.file.mimetype };
+    return { buffer: ensureUsableBuffer(req.file.buffer), mimeType: req.file.mimetype };
   }
 
   const base64 = typeof req.body?.imageBase64 === "string" ? req.body.imageBase64 : undefined;
@@ -120,6 +153,7 @@ export const createApp = ({ detector, config }: CreateAppOptions = {}): Applicat
     transports: [new transports.Console()],
   });
   const ocrDetector = detector ?? createTesseractDetector();
+  const staticDir = resolvedConfig.staticDir;
 
   const upload = multer({
     storage: multer.memoryStorage(),
@@ -143,8 +177,8 @@ export const createApp = ({ detector, config }: CreateAppOptions = {}): Applicat
       credentials: true,
     })
   );
-  app.use(express.json({ limit: "10mb" }));
-  app.use(express.urlencoded({ extended: true, limit: "10mb" }));
+  app.use(express.json({ limit: BODY_LIMIT }));
+  app.use(express.urlencoded({ extended: true, limit: BODY_LIMIT }));
   app.use(morgan("combined"));
   app.use(
     rateLimit({
@@ -187,6 +221,20 @@ export const createApp = ({ detector, config }: CreateAppOptions = {}): Applicat
     }
   });
 
+  const staticIndexPath = staticDir ? path.join(staticDir, "index.html") : null;
+  const hasStatic = staticIndexPath ? fs.existsSync(staticIndexPath) : false;
+  if (hasStatic && staticDir && staticIndexPath) {
+    const indexPath = staticIndexPath;
+    app.use(express.static(staticDir));
+    app.use((req, res, next) => {
+      if (req.path.startsWith("/api/")) {
+        next();
+        return;
+      }
+      res.sendFile(indexPath);
+    });
+  }
+
   app.use(
     (
       err: unknown,
@@ -195,8 +243,10 @@ export const createApp = ({ detector, config }: CreateAppOptions = {}): Applicat
       _next: express.NextFunction
     ) => {
       if (err instanceof RequestError) {
-        logger.warn("handled_request_error", { code: err.code, message: err.message });
-        res.status(err.status).json({ success: false, message: err.message, code: err.code });
+        logger.warn("handled_request_error", { code: err.code, message: err.message, retryable: err.retryable });
+        res
+          .status(err.status)
+          .json({ success: false, message: err.message, code: err.code, retryable: err.retryable });
         return;
       }
 
@@ -204,15 +254,25 @@ export const createApp = ({ detector, config }: CreateAppOptions = {}): Applicat
         if (err.code === "LIMIT_FILE_SIZE") {
           res
             .status(413)
-            .json({ success: false, message: "ファイルサイズが上限を超えています (5MB 以内)", code: err.code });
+            .json({
+              success: false,
+              message: `ファイルサイズが上限を超えています（${MAX_UPLOAD_MB}MB 以内）。画像を小さくして再度お試しください。`,
+              code: err.code,
+              retryable: true,
+            });
           return;
         }
-        res.status(400).json({ success: false, message: "ファイルのアップロードに失敗しました", code: err.code });
+        res.status(400).json({
+          success: false,
+          message: "ファイルのアップロードに失敗しました。別の画像で再度お試しください。",
+          code: err.code,
+          retryable: true,
+        });
         return;
       }
 
       logger.error("unhandled_error", { err });
-      res.status(500).json({ success: false, message: "内部エラーが発生しました" });
+      res.status(500).json({ success: false, message: "内部エラーが発生しました", retryable: false });
     }
   );
 

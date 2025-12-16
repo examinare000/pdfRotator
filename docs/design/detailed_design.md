@@ -17,6 +17,7 @@
 - フロント：React + TypeScript + Vite、PDF.js（レンダリング）、pdf-lib（回転適用・保存）。PDF.js workerは `public/pdf.worker.js` として分離。
 - バックエンド：Express + TypeScript、OCR APIのみ（CORS限定）。ログ: morgan + winston。
 - OCR：Tesseract.js（Node）。入力PNG/JPEG→orientation/confidence→JSON返却。
+- 配布・ホスティング：フロントはViteビルド成果物を `server/public` に同梱し、Expressで静的配信+SPAフォールバック。Windows配布は zip 解凍 + `start.cmd` 実行のみで利用可能。
 
 ## 4. ユースケース/画面フロー
 1) 初期表示：アップロードエリアのみ表示。  
@@ -34,7 +35,8 @@
   - `UploadPane`: DnD/ファイル入力、バリデーション（拡張子: pdf、サイズ: 50MB以内）。
   - `Viewer`: PDF.jsでページ描画、ローディング・エラーハンドリング、キャンバス再利用。
   - `PageControls`: 現在ページ表示/入力、前後移動、全ページ数表示。
-  - `RotateControls`: 左右回転、OCRトリガ、提案の適用、適用（保存）ボタン。
+  - `RotateControls`: 左右回転、適用（保存）ボタン。
+  - `OrientationPanel`: OCRしきい値入力、推定結果表示、提案の適用ボタン。
   - `Toolbar`: ズームイン/アウト/フィット幅、ダウンロードショートカット表示。
 - 状態/型（例）
   - `pdfDoc: PDFDocumentProxy | null`
@@ -46,7 +48,7 @@
   - `ocrSuggestion: { page: number; rotation: 0|90|180|270|null; confidence: number; processingMs?: number } | null`
   - `ui`: { loading: boolean; ocrLoading: boolean; error?: string }
 - PDF.js設定
-  - workerSrc を `public/pdf.worker.js` に配置し、`GlobalWorkerOptions.workerSrc` で指定。
+  - workerSrc を `public/pdf.worker.js` に配置し、`resolveWorkerSrc` で `BASE_URL` に追従しつつ `GlobalWorkerOptions.workerSrc` を設定。
   - `renderPage(pageNumber, rotation, zoom)` でキャンバスを生成/再利用し、回転はPDF.js viewportではなく、状態から付与。
 - 回転ロジック
   - 入力は90度単位のみ許容：`normalize = ((value % 360) + 360) % 360`.
@@ -66,14 +68,14 @@
 - パフォーマンス
   - 初期表示：1ページ目のみ描画、残りは遅延。
   - プリフェッチ：currentPage±1 をバックグラウンド描画し renderCache に保持。
-  - キャンバス最大幅/高さをデバイス幅で clamp（例: 1600px）。
-  - 100ページPDFで3秒以内を目標に、ファイル読み込み+1ページ描画の計測を実装。
+  - キャンバス最大幅/高さをデバイス幅で clamp（例: 1600px）。`renderPageToCanvas` でスケールを自動調整。
+  - 100ページPDFで3秒以内を目標に、ファイル読み込み+1ページ描画の計測を実装（`cd frontend && npm run measure:pages` でサンプルPDF生成と計測を実行。`PAGE_COUNT` 環境変数でページ数を指定可能）。
 
 ## 6. バックエンド詳細（Express）
 - API
   - `GET /api/health` → 200 `{ status, version }`
   - `POST /api/ocr/orientation`
-    - Content-Type: `multipart/form-data` フィールド名 `file`（PNG/JPEG、5MB以内）、または `application/json` `{ imageBase64 }`
+    - Content-Type: `multipart/form-data` フィールド名 `file`（PNG/JPEG、50MB以内）、または `application/json` `{ imageBase64 }`
     - Query/Body: `threshold` (0-1, optional; default 0.6)。閾値未達なら rotation を `null` にする。
     - Response 200: `{ success: true, rotation: 0|90|180|270|null, confidence: number, textSample?: string, processingMs: number }`
     - 400: バリデーションエラー（画像未提供/非対応MIME/Base64不正/閾値不正）
@@ -85,18 +87,24 @@
 - ミドルウェア/セキュリティ
   - `helmet()`、`cors({ origin: CORS_ORIGIN, credentials: true })`
   - Rate limit: 60 req/min/IP
-  - Payload: `json/urlencoded 10MB`, `multer` file 5MB
+  - Payload: `json/urlencoded 70MB`, `multer` file 50MB
   - オプション: `csrf`（Cookie運用時）、JWTの場合はトークン検証ミドルウェア
 - OCR処理
   - `OCR_ENABLED=false` なら 503 を返す。
   - タイムアウト: `OCR_TIMEOUT_MS`（例:1500ms）で `Promise.race`。504で応答。
-  - Tesseract: `detect(buffer)` → `orientation_degrees` を 90 度単位に正規化、`orientation_confidence` を返却。
+  - 優先戦略: `Tesseract.detect(buffer)` → `orientation_degrees` を 90 度単位に正規化、`orientation_confidence` を返却し、1回の `recognize` で `textSample` を返す。
+  - フォールバック戦略: カスタム `recognize/rotate` が注入された場合や detect 失敗時に、0/90/180/270 の各回転を `recognize` し、文字数最大の回転を採用（confidence は比率）。
   - 信頼度 < threshold の場合は `rotation: null` で返す。
-  - 画像はメモリ上でのみ保持し、保存しない。multer メモリストレージを使用。
+  - 画像はメモリ上でのみ保持し、保存しない。multer メモリストレージを使用。Base64 とファイルで同じバリデーションを共有。
 - ロギング
   - リクエストID（`x-request-id` が無ければ生成）
   - 正常: method/path/status/duration
   - 失敗: stack はサーバログのみ、レスポンスには汎用メッセージ。
+
+## 6.1 静的配信と配布
+- 静的配信: `server/public` を `express.static` で配信し、非APIパスは `index.html` を返す（SPAフォールバック）。
+- 配布: `scripts/package-win.ps1` により `frontend` をビルドし `server/public` に配置、`server` をビルド、必要なランタイムを `release/pdfrotator-win64.zip` にまとめる。`-IncludeNode` で node.exe を同梱し、利用者は解凍して `start.cmd` を実行するだけで起動。
+- 設定: `STATIC_DIR` 環境変数で静的配信パスを上書き可能（未設定時は `server/public`）。OCR設定は `OCR_ENABLED`, `OCR_TIMEOUT_MS`, `CORS_ORIGIN` を使用。
 
 ## 7. PDF処理・保存ロジック（フロント）
 - 保存手順
@@ -132,7 +140,7 @@
   - `OCR_ENABLED=false` の 503 応答。
 - 結合/E2E
   - PDFロード→回転→保存で回転がPDFに反映されること（Playwright + pdf-lib で検証）。
-  - OCR API モックでレコメンド→適用→保存までのシナリオ。
+  - OCR API モックでレコメンド→提案適用→保存までのシナリオ。
   - 100ページPDFで初期表示時間が3秒以内か計測。
 - 非機能/セキュリティ
   - OWASP ZAP による簡易DAST（XSS/CSRF エンドポイント確認）。

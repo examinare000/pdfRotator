@@ -1,7 +1,7 @@
 # ADR-001: OCR向き判定APIの設計方針
 
 ## ステータス
-採用済み（2025-12-15）
+採用済み（2025-12-15） / 2025-12-15 フロント統合方針を追記
 
 ## 背景
 - MVP要件で「OCRによる向きレコメンド」を提供する必要がある。
@@ -11,7 +11,7 @@
 ## 決定
 - エンドポイント: `POST /api/ocr/orientation`
 - 入力
-  - `multipart/form-data` の `file` (image/png/jpeg, 5MB以内) または `application/json` の `imageBase64`
+  - `multipart/form-data` の `file` (image/png/jpeg, 50MB以内) または `application/json` の `imageBase64`
   - 任意パラメータ `threshold`（0..1、デフォルト0.6）
 - 出力
   - 200: `{ success: true, rotation: 0|90|180|270|null, confidence: number, textSample?: string, processingMs: number }`
@@ -24,7 +24,8 @@
 - 実装詳細
   - multer のメモリストレージで画像をメモリのみで扱う。
   - 画像形式制限（png/jpeg）。Base64はプレフィックス付き/無しの双方を許容し、簡易バリデーションを実施。
-  - Tesseract.js `detect` の `orientation_degrees` と `orientation_confidence` を使用し、90度単位に正規化する。
+  - 優先戦略: Tesseract.js `detect` で `orientation_degrees` / `orientation_confidence` を取得し、90度単位に正規化。テキスト抽出は必要に応じて `recognize` を1回だけ実行して `textSample` を返す。
+  - フォールバック戦略: 認識ロジックが注入された場合は 0/90/180/270 の各回転を `recognize` に掛け、文字数最大の回転を採用する（信頼度は比率で算出）。
   - 閾値未達の場合は rotation を `null` に上書きする。
   - 依存注入可能な `OrientationDetector` 抽象化を用意し、テストでスタブ化する。
 - ロギング: リクエストエラーは warn、その他は info/ error で構造化JSON出力する。
@@ -36,9 +37,10 @@
 - タイムアウトと機能フラグで信頼性を担保し、フロントのリトライ戦略と整合。
 
 ## トレードオフ
-- メモリ使用量が増えるが、5MB上限で許容。
-- テキスト抽出（`textSample`）は現状返却しないため、将来的なデバッグ用途では追加実装が必要。
+- メモリ使用量が増えるが、50MB上限で許容。
+- テキスト抽出を1回だけ行うため、テキスト品質が低い場合は `textSample` が空になることがある。精度と性能のバランスを優先。
 - レート制限は1分60リクエストの簡易設定であり、実運用ではIP単位の調整が必要。
+- 静的配信は `server/public` へのビルド成果物コピーと SPA フォールバックで対応し、Node 同梱 zip 配布を優先する（ブラウザだけで利用可能にするため、サーバをローカル起動するシンプル運用を選択）。
 
 ## 採用した代替案と理由
 - 代替案: フロントでのみOCRを実施しサーバAPIを不要にする  
@@ -49,4 +51,15 @@
 ## 影響範囲
 - バックエンド: `/api/ocr/orientation` 実装・設定値追加。
 - フロントエンド: レスポンス構造（`success`, `rotation`, `confidence`, `processingMs`）に合わせたUI更新が必要。
-- 運用: 環境変数 `OCR_ENABLED`, `OCR_TIMEOUT_MS`, `CORS_ORIGIN` の管理。
+- 運用: 環境変数 `OCR_ENABLED`, `OCR_TIMEOUT_MS`, `CORS_ORIGIN`, `STATIC_DIR` の管理。配布パッケージでは `server/public` に静的ビルドを同梱し `start.cmd` で起動。
+
+## 2025-12-15 追記（フロント統合の現況）
+- ビューワ: `pdfjs-dist` と `useViewerState` でPDFを表示・回転・ページ移動・ズームを実装済み。回転マップは90度単位。
+- 保存: `pdf-lib` で回転を適用し、Ctrl/Cmd+S ショートカットとボタンで `rotated.pdf` をダウンロード。
+- ショートカット: →(+90°して次ページ) / ←(-90°して次ページ) / ↓(次) / ↑(前) を実装。入力フォーカス時は無効化。
+- OCR連携予定: 本エンドポイントを呼び出す「向きレコメンド」ボタンを追加し、`rotation`/`confidence` を回転マップに反映するUIを次ステップで実装する。
+
+## 2025-12-16 追記（実装完了と挙動）
+- バックエンド: 50MB 上限に拡張し、Base64/ファイル双方に再利用するバリデーションを追加。`textSample` を返却し、Tesseract.detect が失敗した場合は4方向スイープでフォールバックする。
+- フロントエンド: `OrientationPanel` を実装し、PDFページを `renderPageToCanvas` 経由でPNG化して本エンドポイントへ送信。しきい値入力、信頼度表示、提案の適用ボタンを提供し、UIテストを追加。
+- フロント実装は `pdf.worker.js` を `public/` に配置し、`resolveWorkerSrc` で `BASE_URL` に追従。Vitest + Testing Library のセットアップを追加。
