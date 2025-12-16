@@ -65,6 +65,9 @@ export const renderPageToCanvas = async (
     rotation: options.rotation ?? 0,
   });
 
+  canvas.width = viewport.width;
+  canvas.height = viewport.height;
+
   const renderTask = page.render({ canvasContext: ctx, viewport });
   await renderTask.promise;
   return { width: viewport.width, height: viewport.height };
