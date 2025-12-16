@@ -28,6 +28,13 @@ export const applyRotationChange = (
   return { ...rotationMap, [pageNumber]: nextRotation };
 };
 
+export const getPageRotation = (rotationMap: PageRotationMap, pageNumber: number): Rotation => {
+  if (!(pageNumber in rotationMap)) {
+    return 0;
+  }
+  return normalizeRotation(rotationMap[pageNumber]);
+};
+
 export const clampPageNumber = (page: number, totalPages: number): number => {
   if (!Number.isFinite(totalPages) || totalPages < 1) {
     throw new Error("総ページ数は1以上である必要があります");
