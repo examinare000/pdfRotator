@@ -17,6 +17,7 @@
 - フロント：React + TypeScript + Vite、PDF.js（レンダリング）、pdf-lib（回転適用・保存）。PDF.js workerは `public/pdf.worker.js` として分離。
 - バックエンド：Express + TypeScript、OCR APIのみ（CORS限定）。ログ: morgan + winston。
 - OCR：Tesseract.js（Node）。入力PNG/JPEG→orientation/confidence→JSON返却。
+- 配布・ホスティング：フロントはViteビルド成果物を `server/public` に同梱し、Expressで静的配信+SPAフォールバック。Windows配布は zip 解凍 + `start.cmd` 実行のみで利用可能。
 
 ## 4. ユースケース/画面フロー
 1) 初期表示：アップロードエリアのみ表示。  
@@ -97,6 +98,11 @@
   - リクエストID（`x-request-id` が無ければ生成）
   - 正常: method/path/status/duration
   - 失敗: stack はサーバログのみ、レスポンスには汎用メッセージ。
+
+## 6.1 静的配信と配布
+- 静的配信: `server/public` を `express.static` で配信し、非APIパスは `index.html` を返す（SPAフォールバック）。
+- 配布: `scripts/package-win.ps1` により `frontend` をビルドし `server/public` に配置、`server` をビルド、必要なランタイムを `release/pdfrotator-win64.zip` にまとめる。`-IncludeNode` で node.exe を同梱し、利用者は解凍して `start.cmd` を実行するだけで起動。
+- 設定: `STATIC_DIR` 環境変数で静的配信パスを上書き可能（未設定時は `server/public`）。OCR設定は `OCR_ENABLED`, `OCR_TIMEOUT_MS`, `CORS_ORIGIN` を使用。
 
 ## 7. PDF処理・保存ロジック（フロント）
 - 保存手順

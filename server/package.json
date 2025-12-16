@@ -8,6 +8,7 @@
     "build": "tsc --noEmit false",
     "start": "node dist/index.js",
     "test": "vitest run",
+    "package:win": "powershell -ExecutionPolicy Bypass -File ../scripts/package-win.ps1",
     "lint": "echo \"(add eslint once rules are defined)\""
   },
   "keywords": [],

@@ -15,6 +15,10 @@ export type PdfDocumentProxy = {
   getPage: (pageNumber: number) => Promise<PdfPageProxy>;
 };
 
+export type PdfLoader = {
+  loadFromArrayBuffer: (buffer: ArrayBuffer, options?: LoadOptions) => Promise<PdfDocumentProxy>;
+};
+
 export type PdfJsLike = {
   getDocument: (src: { data: ArrayBuffer }) => { promise: Promise<PdfDocumentProxy> };
   GlobalWorkerOptions?: { workerSrc?: string };
@@ -35,8 +39,12 @@ export const createPdfLoader = (pdfjs: PdfJsLike) => {
         pdfjs.GlobalWorkerOptions.workerSrc = options.workerSrc;
       }
 
-      const task = pdfjs.getDocument({ data: buffer });
-      return await task.promise;
+      try {
+        const task = pdfjs.getDocument({ data: buffer });
+        return await task.promise;
+      } catch (error) {
+        throw new Error("PDFの読み込みに失敗しました", { cause: error as Error });
+      }
     },
   };
 };
