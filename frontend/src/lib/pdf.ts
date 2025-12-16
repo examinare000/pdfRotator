@@ -22,6 +22,23 @@ export type PdfJsLike = {
 
 export type LoadOptions = {
   workerSrc?: string;
+  baseUrl?: string;
+};
+
+export const resolveWorkerSrc = (baseUrl?: string): string => {
+  const base =
+    baseUrl ??
+    // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+    // @ts-expect-error import.meta may not exist in tests
+    (typeof import.meta !== "undefined" ? import.meta.env?.BASE_URL : "/") ??
+    "/";
+  const normalizedBase = base === "" ? "/" : base;
+  const trimmed = normalizedBase.endsWith("/") ? normalizedBase.slice(0, -1) : normalizedBase;
+  const safeBase = trimmed === "" ? "/" : trimmed;
+  if (safeBase === "/") {
+    return "/pdf.worker.js";
+  }
+  return `${safeBase}/pdf.worker.js`;
 };
 
 export const createPdfLoader = (pdfjs: PdfJsLike) => {
@@ -31,8 +48,9 @@ export const createPdfLoader = (pdfjs: PdfJsLike) => {
         throw new Error("PDFデータが空です");
       }
 
-      if (options?.workerSrc && pdfjs.GlobalWorkerOptions) {
-        pdfjs.GlobalWorkerOptions.workerSrc = options.workerSrc;
+      const workerSrc = options?.workerSrc ?? resolveWorkerSrc(options?.baseUrl);
+      if (pdfjs.GlobalWorkerOptions) {
+        pdfjs.GlobalWorkerOptions.workerSrc = workerSrc;
       }
 
       const task = pdfjs.getDocument({ data: buffer });
@@ -44,6 +62,8 @@ export const createPdfLoader = (pdfjs: PdfJsLike) => {
 export type RenderOptions = {
   scale: number;
   rotation?: number;
+  maxCanvasWidth?: number;
+  maxCanvasHeight?: number;
 };
 
 export const renderPageToCanvas = async (
@@ -60,12 +80,31 @@ export const renderPageToCanvas = async (
     throw new Error("スケールは正の数で指定してください");
   }
 
-  const viewport = page.getViewport({
+  const rotation = options.rotation ?? 0;
+  const initialViewport = page.getViewport({
     scale: options.scale,
-    rotation: options.rotation ?? 0,
+    rotation,
   });
+
+  const widthLimit = Number.isFinite(options.maxCanvasWidth) ? options.maxCanvasWidth : Infinity;
+  const heightLimit = Number.isFinite(options.maxCanvasHeight) ? options.maxCanvasHeight : Infinity;
+  const clampRatio = Math.min(
+    1,
+    widthLimit / initialViewport.width,
+    heightLimit / initialViewport.height
+  );
+
+  const effectiveScale = options.scale * clampRatio;
+  const viewport =
+    clampRatio < 1
+      ? page.getViewport({ scale: effectiveScale, rotation })
+      : initialViewport;
+
+  // Canvasは整数ピクセルに設定する（PDF.jsの描画サイズに合わせる）
+  canvas.width = Math.round(viewport.width);
+  canvas.height = Math.round(viewport.height);
 
   const renderTask = page.render({ canvasContext: ctx, viewport });
   await renderTask.promise;
-  return { width: viewport.width, height: viewport.height };
+  return { width: canvas.width, height: canvas.height };
 };
