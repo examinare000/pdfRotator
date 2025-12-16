@@ -1,87 +1,115 @@
-import { renderPageToCanvas, type PdfDocumentProxy } from "./pdf";
-import type { Rotation } from "./rotation";
+import { renderPageToCanvas, type PdfPageProxy } from "./pdf";
 
-export type OrientationSuggestion = {
-  rotation: Rotation | null;
+export type Orientation = 0 | 90 | 180 | 270 | null;
+
+export type OrientationResponse = {
+  success: true;
+  rotation: Orientation;
   confidence: number;
-  processingMs?: number;
+  processingMs: number;
   textSample?: string;
 };
 
-type RequestOptions = {
+export type OrientationRequestOptions = {
+  threshold?: number;
   fetcher?: typeof fetch;
+  endpoint?: string;
 };
 
-type DetectOptions = RequestOptions & {
-  createCanvas?: () => HTMLCanvasElement;
+export type RenderPageToPngOptions = {
   scale?: number;
+  rotation?: number;
+  createCanvas?: () => HTMLCanvasElement;
+  render?: (
+    page: PdfPageProxy,
+    canvas: HTMLCanvasElement,
+    options: { scale: number; rotation?: number }
+  ) => Promise<{ width: number; height: number }>;
 };
 
-const extractBase64FromDataUrl = (dataUrl: string): string => {
-  if (!dataUrl || !dataUrl.includes(",")) {
-    return "";
-  }
-  const [, base64] = dataUrl.split(",", 2);
-  return base64?.trim() ?? "";
+export type DetectOrientationParams = {
+  page: PdfPageProxy;
+  threshold?: number;
+  scale?: number;
+  rotation?: number;
+  createCanvas?: () => HTMLCanvasElement;
+  render?: RenderPageToPngOptions["render"];
+  request?: (payload: { imageBase64: string; threshold: number }) => Promise<OrientationResponse>;
 };
 
-export const requestOrientationDetection = async (
-  imageBase64: string,
-  options: RequestOptions = {}
-): Promise<OrientationSuggestion> => {
-  const fetcher = options.fetcher ?? fetch;
-  if (!imageBase64) {
-    throw new Error("OCRの推定に失敗しました: 画像データが空です");
-  }
+const DEFAULT_THRESHOLD = 0.6;
+const DEFAULT_ENDPOINT = "/api/ocr/orientation";
 
-  let response: Response;
-  try {
-    response = await fetcher("/api/ocr/orientation", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ imageBase64 }),
-    });
-  } catch (error) {
-    throw new Error("OCRの推定に失敗しました: ネットワークエラーが発生しました");
-  }
+export const renderPageToPng = async (
+  page: PdfPageProxy,
+  options: RenderPageToPngOptions = {}
+): Promise<{ dataUrl: string; viewport: { width: number; height: number } }> => {
+  const canvas = options.createCanvas?.() ?? document.createElement("canvas");
+  const renderFn = options.render ?? renderPageToCanvas;
 
-  const body = await response.json().catch(() => ({}));
-  if (!response.ok || body?.success === false) {
-    const message = body?.message ?? `HTTP ${response.status} エラー`;
-    throw new Error(`OCRの推定に失敗しました: ${message}`);
-  }
+  const viewport = await renderFn(page, canvas, {
+    scale: options.scale ?? 1,
+    rotation: options.rotation,
+  });
 
-  return {
-    rotation: body?.rotation ?? null,
-    confidence: body?.confidence ?? 0,
-    processingMs: body?.processingMs,
-    textSample: body?.textSample,
-  };
-};
-
-export const detectOrientationForPage = async (
-  doc: PdfDocumentProxy,
-  pageNumber: number,
-  options: DetectOptions = {}
-): Promise<OrientationSuggestion & { page: number }> => {
-  if (!doc) {
-    throw new Error("PDFが読み込まれていません");
-  }
-  if (!Number.isFinite(pageNumber) || pageNumber < 1 || pageNumber > doc.numPages) {
-    throw new Error("ページ番号が不正です");
-  }
-
-  const page = await doc.getPage(pageNumber);
-  const canvas = options.createCanvas ? options.createCanvas() : document.createElement("canvas");
-  const scale = options.scale ?? 1;
-
-  await renderPageToCanvas(page as any, canvas, { scale, rotation: 0 });
   const dataUrl = canvas.toDataURL("image/png");
-  const base64 = extractBase64FromDataUrl(dataUrl);
-  if (!base64) {
-    throw new Error("ページ画像の取得に失敗しました");
+  return { dataUrl, viewport };
+};
+
+export const requestOrientation = async (
+  imageBase64: string,
+  options: OrientationRequestOptions = {}
+): Promise<OrientationResponse> => {
+  const fetcher = options.fetcher ?? fetch;
+  const threshold = options.threshold ?? DEFAULT_THRESHOLD;
+  const endpoint = options.endpoint ?? DEFAULT_ENDPOINT;
+
+  const res = await fetcher(endpoint, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ imageBase64, threshold }),
+  });
+
+  const data = res?.ok ? await res.json() : null;
+
+  if (!res?.ok || !data?.success) {
+    const fallback = "OCRのリクエストに失敗しました";
+    const message =
+      data?.message && typeof data.message === "string"
+        ? `${fallback}: ${data.message}`
+        : fallback;
+    throw new Error(message);
   }
 
-  const suggestion = await requestOrientationDetection(base64, { fetcher: options.fetcher });
-  return { ...suggestion, page: pageNumber };
+  return data as OrientationResponse;
+};
+
+export const detectOrientationFromPage = async (
+  params: DetectOrientationParams
+): Promise<{ suggestion: OrientationResponse; imageBase64: string; viewport: { width: number; height: number } }> => {
+  const {
+    page,
+    threshold = DEFAULT_THRESHOLD,
+    scale = 1,
+    rotation = 0,
+    createCanvas,
+    render,
+    request,
+  } = params;
+
+  const { dataUrl, viewport } = await renderPageToPng(page, {
+    scale,
+    rotation,
+    createCanvas,
+    render,
+  });
+
+  const requester =
+    request ??
+    ((payload: { imageBase64: string; threshold: number }) =>
+      requestOrientation(payload.imageBase64, { threshold: payload.threshold }));
+
+  const suggestion = await requester({ imageBase64: dataUrl, threshold });
+
+  return { suggestion, imageBase64: dataUrl, viewport };
 };

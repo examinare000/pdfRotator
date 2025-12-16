@@ -128,6 +128,50 @@ describe("POST /api/ocr/orientation", () => {
     expect(typeof res.body.processingMs).toBe("number");
   });
 
+  it("50MBを超える画像は413とリトライ可能フラグを返す", async () => {
+    const detector: OrientationDetector = {
+      detect: async () => ({
+        rotation: 0,
+        confidence: 1,
+      }),
+    };
+    const app = buildApp(detector);
+    const bigBuffer = Buffer.alloc(50 * 1024 * 1024 + 1);
+
+    const res = await request(app)
+      .post("/api/ocr/orientation")
+      .attach("file", bigBuffer, { filename: "too-big.png", contentType: "image/png" });
+
+    expect(res.status).toBe(413);
+    expect(res.body).toMatchObject({
+      success: false,
+      retryable: true,
+      code: "LIMIT_FILE_SIZE",
+    });
+    expect(res.body.message).toContain("50MB");
+  });
+
+  it("空の画像は400とリトライ可能フラグを返す", async () => {
+    const detector: OrientationDetector = {
+      detect: async () => ({
+        rotation: null,
+        confidence: 0,
+      }),
+    };
+    const app = buildApp(detector);
+
+    const res = await request(app)
+      .post("/api/ocr/orientation")
+      .attach("file", Buffer.alloc(0), { filename: "empty.png", contentType: "image/png" });
+
+    expect(res.status).toBe(400);
+    expect(res.body).toMatchObject({
+      success: false,
+      code: "empty_image",
+      retryable: true,
+    });
+  });
+
   it("OCR処理がタイムアウトした場合は504を返す", async () => {
     const detector: OrientationDetector = {
       detect: async () =>
