@@ -1,15 +1,52 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent } from "react";
 import { createPdfJsDistLoader } from "./lib/pdfjs";
 import workerSrc from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { useViewerState } from "./hooks/useViewerState";
 import { renderPageToCanvas } from "./lib/pdf";
 import { savePdfWithRotation } from "./lib/pdf-save";
 import { detectOrientationForPage, type OrientationSuggestion } from "./lib/ocr";
+import { clampPageNumber } from "./lib/rotation";
 import "./App.css";
 
 const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
+const DEFAULT_OCR_THRESHOLD = 0.6;
 
 type RenderState = "idle" | "rendering" | "error";
+
+const clampThreshold = (value: number): number => {
+  if (Number.isNaN(value)) return 0;
+  if (value < 0) return 0;
+  if (value > 1) return 1;
+  return value;
+};
+
+const isPdfFile = (file: File): boolean => {
+  if (file.type === "application/pdf") {
+    return true;
+  }
+  return file.name.toLowerCase().endsWith(".pdf");
+};
+
+const readFileAsArrayBuffer = async (file: Blob): Promise<ArrayBuffer> => {
+  const anyFile = file as Blob & { arrayBuffer?: () => Promise<ArrayBuffer> };
+  if (typeof anyFile.arrayBuffer === "function") {
+    return await anyFile.arrayBuffer();
+  }
+
+  return await new Promise<ArrayBuffer>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("ファイルの読み込みに失敗しました"));
+    reader.onload = () => {
+      const result = reader.result;
+      if (result instanceof ArrayBuffer) {
+        resolve(result);
+        return;
+      }
+      reject(new Error("ファイルの読み込みに失敗しました"));
+    };
+    reader.readAsArrayBuffer(file);
+  });
+};
 
 function App() {
   const pdfLoader = useMemo(() => createPdfJsDistLoader({ workerSrc }), []);
@@ -25,6 +62,7 @@ function App() {
   } = useViewerState({ loader: pdfLoader });
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const dragDepthRef = useRef(0);
   const [fileName, setFileName] = useState<string>("");
   const [originalBuffer, setOriginalBuffer] = useState<ArrayBuffer | null>(null);
   const [renderState, setRenderState] = useState<RenderState>("idle");
@@ -34,9 +72,12 @@ function App() {
   );
   const [ocrError, setOcrError] = useState<string | null>(null);
   const [ocrLoading, setOcrLoading] = useState(false);
+  const [ocrThreshold, setOcrThreshold] = useState(DEFAULT_OCR_THRESHOLD);
+  const [pageInput, setPageInput] = useState<string>("1");
+  const [dragging, setDragging] = useState(false);
 
   const handleFile = async (file: File) => {
-    if (file.type !== "application/pdf") {
+    if (!isPdfFile(file)) {
       setMessage("PDFファイルを選択してください");
       return;
     }
@@ -48,9 +89,15 @@ function App() {
     setFileName(file.name);
     setOcrSuggestion(null);
     setOcrError(null);
-    const buffer = await file.arrayBuffer();
-    await loadFromArrayBuffer(buffer);
-    setOriginalBuffer(buffer);
+    try {
+      const buffer = await readFileAsArrayBuffer(file);
+      await loadFromArrayBuffer(buffer);
+      setOriginalBuffer(buffer);
+    } catch (error) {
+      const text = error instanceof Error ? error.message : "PDFの読み込みに失敗しました";
+      setMessage(text);
+      setOriginalBuffer(null);
+    }
   };
 
   const handleFileInput = async (event: ChangeEvent<HTMLInputElement>) => {
@@ -60,6 +107,38 @@ function App() {
       event.target.value = "";
     }
   };
+
+  const handleDragEnter = (event: DragEvent) => {
+    event.preventDefault();
+    dragDepthRef.current += 1;
+    setDragging(true);
+  };
+
+  const handleDragLeave = (event: DragEvent) => {
+    event.preventDefault();
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+    if (dragDepthRef.current === 0) {
+      setDragging(false);
+    }
+  };
+
+  const handleDrop = (event: DragEvent) => {
+    event.preventDefault();
+    dragDepthRef.current = 0;
+    setDragging(false);
+    const file = event.dataTransfer?.files?.[0];
+    if (file) {
+      void handleFile(file);
+    }
+  };
+
+  useEffect(() => {
+    if (state.numPages > 0) {
+      setPageInput(String(state.currentPage));
+    } else {
+      setPageInput("1");
+    }
+  }, [state.currentPage, state.numPages]);
 
   useEffect(() => {
     if (!state.pdfDoc || !canvasRef.current || state.status !== "ready") {
@@ -169,6 +248,20 @@ function App() {
     setRenderState("idle");
   };
 
+  const handlePageJump = () => {
+    if (state.status !== "ready") {
+      return;
+    }
+    const raw = Number(pageInput);
+    if (!Number.isFinite(raw)) {
+      setMessage("ページ番号が不正です");
+      return;
+    }
+    const nextPageNumber = clampPageNumber(raw, state.numPages);
+    setPage(nextPageNumber);
+    setMessage(null);
+  };
+
   const handleDetectOrientation = async () => {
     if (!state.pdfDoc) {
       setOcrError("PDFを読み込んでから実行してください");
@@ -177,7 +270,10 @@ function App() {
     setOcrLoading(true);
     setOcrError(null);
     try {
-      const suggestion = await detectOrientationForPage(state.pdfDoc, state.currentPage, { fetcher: fetch });
+      const suggestion = await detectOrientationForPage(state.pdfDoc, state.currentPage, {
+        fetcher: fetch,
+        threshold: ocrThreshold,
+      });
       setOcrSuggestion(suggestion);
     } catch (error) {
       const text = error instanceof Error ? error.message : "OCRの推定に失敗しました";
@@ -276,10 +372,17 @@ function App() {
 
         <div className="workspace__side">
           <section className="panel upload">
-            <div className="upload__area">
+            <div
+              className={`upload__area ${dragging ? "upload__area--dragging" : ""}`}
+              onDragEnter={handleDragEnter}
+              onDragOver={(event) => event.preventDefault()}
+              onDragLeave={handleDragLeave}
+              onDrop={handleDrop}
+              aria-label="PDFをドラッグ&ドロップ"
+            >
               <div>
                 <p className="label">PDFアップロード</p>
-                <p className="hint">50MB以内のPDF。選択後に自動で読み込みます。</p>
+                <p className="hint">50MB以内のPDF。ドラッグ&ドロップまたは選択で読み込みます。</p>
               </div>
               <div className="upload__controls">
                 <label className="upload__btn">
@@ -307,9 +410,49 @@ function App() {
                   次へ
                 </button>
               </div>
+              <div className="button-row">
+                <input
+                  className="number-input"
+                  type="number"
+                  inputMode="numeric"
+                  min={1}
+                  max={state.numPages || 1}
+                  value={pageInput}
+                  onChange={(event) => setPageInput(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      handlePageJump();
+                    }
+                  }}
+                  disabled={state.status !== "ready"}
+                  aria-label="ページ番号入力"
+                />
+                <button onClick={handlePageJump} disabled={state.status !== "ready"}>
+                  移動
+                </button>
+              </div>
             </div>
             <div className="controls__group">
               <p className="label">OCR向き推定</p>
+              <div className="threshold-row">
+                <label className="threshold-label">
+                  しきい値
+                  <input
+                    className="number-input"
+                    type="number"
+                    inputMode="decimal"
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    value={ocrThreshold}
+                    onChange={(event) => setOcrThreshold(clampThreshold(Number(event.target.value)))}
+                    disabled={state.status !== "ready"}
+                    aria-label="OCR信頼度しきい値"
+                  />
+                </label>
+                <span className="threshold-value">{Math.round(ocrThreshold * 100)}%</span>
+              </div>
               <div className="button-row">
                 <button
                   onClick={handleDetectOrientation}
@@ -337,7 +480,7 @@ function App() {
                     <span className="pill pill--render">処理 {ocrSuggestion.processingMs}ms</span>
                   )}
                 </div>
-                <p className="hint">現在のページを画像化し、サーバーで向きを推定します。</p>
+                <p className="hint">現在のページを画像化し、サーバーで向きを推定します（しきい値 {ocrThreshold}）。</p>
                 {ocrSuggestion && <p className="hint">推定対象ページ: {ocrSuggestion.page}</p>}
                 {ocrError && <span className="error-text">{ocrError}</span>}
               </div>

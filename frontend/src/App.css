@@ -156,6 +156,15 @@ h1 {
   gap: 12px;
   align-items: center;
   flex-wrap: wrap;
+  padding: 10px;
+  border-radius: 14px;
+  border: 1px dashed rgba(255, 255, 255, 0.08);
+  transition: border-color 140ms ease, background 140ms ease;
+}
+
+.upload__area--dragging {
+  border-color: rgba(126, 243, 247, 0.7);
+  background: rgba(126, 243, 247, 0.06);
 }
 
 .label {
@@ -273,6 +282,46 @@ h1 {
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+.number-input {
+  width: 110px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.02);
+  color: var(--text);
+  font-weight: 700;
+}
+
+.number-input:disabled {
+  opacity: 0.4;
+}
+
+.threshold-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.threshold-label {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.threshold-value {
+  font-family: "IBM Plex Mono", monospace;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+  font-size: 12px;
 }
 
 button {
