@@ -127,7 +127,7 @@ const detectWithTesseract = async (
   let textSample: string | undefined;
   try {
     const targetBuffer =
-      rotation && rotation !== 0 ? await sharp(buffer).rotate(rotation).toBuffer() : buffer;
+      rotation ? await sharp(buffer).rotate(rotation).toBuffer() : buffer;
     const ocrResult = await Tesseract.recognize(targetBuffer);
     textSample = normalizeTextSample(ocrResult.data?.text);
   } catch (error) {
