@@ -11,7 +11,14 @@ function Join-Paths([string] $a, [string] $b) {
   return [System.IO.Path]::Combine($a, $b)
 }
 
-$repoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+function Assert-LastExitCode([string] $step) {
+  if ($LASTEXITCODE -ne 0) {
+    throw "コマンドが失敗しました: $step (exit=$LASTEXITCODE)"
+  }
+}
+
+$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$repoRoot = Resolve-Path (Join-Paths $scriptDir "..") | Select-Object -ExpandProperty Path
 $releaseRoot = Join-Paths $repoRoot "release"
 $packageDir = Join-Paths $releaseRoot "pdfrotator-win64"
 
@@ -27,8 +34,10 @@ New-Item $packageDir -ItemType Directory | Out-Null
 Push-Location (Join-Paths $repoRoot "frontend")
 Write-Host "[frontend] npm ci" -ForegroundColor Green
 npm ci
+Assert-LastExitCode "[frontend] npm ci"
 Write-Host "[frontend] npm run build" -ForegroundColor Green
 npm run build
+Assert-LastExitCode "[frontend] npm run build"
 Pop-Location
 
 # フロント出力を server/public に配置
@@ -44,8 +53,10 @@ Copy-Item (Join-Paths $repoRoot "frontend/dist/*") $serverPublic -Recurse -Force
 Push-Location $serverDir
 Write-Host "[server] npm ci" -ForegroundColor Green
 npm ci
+Assert-LastExitCode "[server] npm ci"
 Write-Host "[server] npm run build" -ForegroundColor Green
 npm run build
+Assert-LastExitCode "[server] npm run build"
 Pop-Location
 
 # ランタイム資材をコピー
@@ -59,6 +70,7 @@ Copy-Item (Join-Paths $serverDir "package-lock.json") $packageDir
 Push-Location $packageDir
 Write-Host "[package] npm ci --omit=dev" -ForegroundColor Green
 npm ci --omit=dev
+Assert-LastExitCode "[package] npm ci --omit=dev"
 Pop-Location
 
 # node.exe 同梱オプション
