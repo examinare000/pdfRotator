@@ -2,6 +2,10 @@
 
 React/Vite 製の PDF ビューワ & 回転ツールと、OCR でページ向きを推定する Express API のモノレポです。ページ単位の回転を保存しつつ、矢印キー操作と OCR レコメンドで素早く整形できます。
 
+## 配布版（Windows）のダウンロード
+- GitHub Releases（最新版）: https://github.com/examinare000/pdfRotator/releases/latest
+  - Assets から `pdfrotator-win64.zip` をダウンロードしてください。
+
 ## 主な機能
 - PDF をブラウザ上で表示し、ページ単位で ±90° 回転・ズーム・ページ移動
 - ↑↓ と →(＋90°) / ←(−90°) のショートカット、Ctrl/Cmd+S で保存
@@ -18,6 +22,16 @@ React/Vite 製の PDF ビューワ & 回転ツールと、OCR でページ向き
 ## 前提
 - Node.js 20+（package-win.ps1 は Node 24 系を想定）
 - PowerShell 7 以上（Windows 配布パッケージ生成時）
+
+## 配布版の使い方（Windows）
+1. Releases から `pdfrotator-win64.zip` をダウンロードして展開
+2. （任意）`.env.example` を `.env` にコピーして設定（例: `PORT=3001`, `OCR_ENABLED=false`）
+3. `start.cmd` を実行
+4. ブラウザで `http://localhost:3001`（`PORT` を変えた場合はその値）を開く
+
+補足:
+- 展開フォルダに `node.exe` が入っていない配布物の場合、別途 Node.js をインストールして `node` が PATH で解決できる必要があります。
+- OCR を有効化している場合、環境によっては初回実行時に追加データの取得が発生することがあります（オフライン運用したい場合は `OCR_ENABLED=false` を推奨）。
 
 ## セットアップ
 ```bash
@@ -66,7 +80,7 @@ cd ../server && npm run build
 # 本番起動（ビルド済み前提）
 npm run start
 ```
-Windows 向け配布 ZIP は PowerShell で生成します。
+Windows 向け配布 ZIP は PowerShell で生成し、GitHub Releases の Assets として配布します。
 ```powershell
 pwsh scripts/package-win.ps1          # Node を同梱しない
 pwsh scripts/package-win.ps1 -IncludeNode  # node.exe を同梱
