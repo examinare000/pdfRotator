@@ -32,9 +32,7 @@ export type LoadOptions = {
 export const resolveWorkerSrc = (baseUrl?: string): string => {
   const base =
     baseUrl ??
-    // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-    // @ts-expect-error import.meta may not exist in tests
-    (typeof import.meta !== "undefined" ? import.meta.env?.BASE_URL : "/") ??
+    (import.meta as unknown as { env?: { BASE_URL?: string } }).env?.BASE_URL ??
     "/";
   const normalizedBase = base === "" ? "/" : base;
   const trimmed = normalizedBase.endsWith("/") ? normalizedBase.slice(0, -1) : normalizedBase;
@@ -103,7 +101,7 @@ const clampViewport = (
 };
 
 const resolveLimit = (value?: number): number | undefined => {
-  if (Number.isFinite(value) && value > 0) {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
     return value;
   }
   return undefined;
@@ -178,10 +176,8 @@ export const createPageCache = <T>(maxEntries = 3): PageCache<T> => {
     set(pageNumber, value) {
       touch(pageNumber, value);
       if (cache.size > maxEntries) {
-        const oldest = cache.keys().next().value;
-        if (oldest !== undefined) {
-          cache.delete(oldest);
-        }
+        const first = cache.keys().next();
+        if (!first.done) cache.delete(first.value);
       }
     },
     has(pageNumber) {

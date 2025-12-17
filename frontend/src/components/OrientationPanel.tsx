@@ -1,4 +1,4 @@
-import React, { useMemo, useState, type ChangeEvent } from "react";
+import { useMemo, useState, type ChangeEvent } from "react";
 import { requestOrientation, type OrientationResponse } from "../lib/ocr";
 
 export type OrientationPanelProps = {
@@ -64,9 +64,9 @@ export const OrientationPanel = ({
   };
 
   const handleApply = () => {
-    if (suggestion?.rotation !== null) {
-      onApply(suggestion.rotation);
-    }
+    if (!suggestion) return;
+    if (suggestion.rotation === null) return;
+    onApply(suggestion.rotation);
   };
 
   const confidenceText = suggestion ? `${Math.round(suggestion.confidence * 100)}%` : null;

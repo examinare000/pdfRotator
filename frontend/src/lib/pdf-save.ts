@@ -30,7 +30,8 @@ export const savePdfWithRotation = async (
   });
 
   const bytes = await pdfDoc.save();
-  const blob = new Blob([bytes], { type: "application/pdf" });
+  const arrayBuffer = Uint8Array.from(bytes).buffer;
+  const blob = new Blob([arrayBuffer], { type: "application/pdf" });
   const fileName = options.fileName ?? "rotated.pdf";
 
   try {
