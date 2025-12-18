@@ -20,7 +20,7 @@ React/Vite 製の PDF ビューワ & 回転ツールと、OCR でページ向き
 - `scripts/` : 配布用 PowerShell スクリプト `package-win.ps1`。
 
 ## 前提
-- Node.js 20+（package-win.ps1 は Node 24 系を想定）
+- 開発/ビルド用: Node.js 20+（`scripts/package-win.ps1` は Node 24 系を想定）
 - PowerShell 7 以上（Windows 配布パッケージ生成時）
 
 ## 配布版の使い方（Windows）
@@ -30,22 +30,26 @@ React/Vite 製の PDF ビューワ & 回転ツールと、OCR でページ向き
 4. ブラウザで `http://localhost:3001`（`PORT` を変えた場合はその値）を開く
 
 補足:
-- 展開フォルダに `node.exe` が入っていない配布物の場合、別途 Node.js をインストールして `node` が PATH で解決できる必要があります。
+- 通常の配布物は `node.exe` を同梱しているため、Node.js の別途インストールは不要です。
+- `-NoNode` オプションで `node.exe` を同梱しない配布物を作った場合は、別途 Node.js をインストールして `node` が PATH で解決できる必要があります。
 - OCR を有効化している場合、環境によっては初回実行時に追加データの取得が発生することがあります（オフライン運用したい場合は `OCR_ENABLED=false` を推奨）。
 
 ## セットアップ
 ```bash
-# フロントエンド
-cd frontend
-npm ci
+# ルートから一括
+npm run setup
 
-# バックエンド
-cd ../server
-npm ci
+# 個別に行う場合:
+# cd frontend && npm ci
+# cd server && npm ci
 ```
 
 ## 開発起動
-別ターミナルでフロントとサーバを起動します。
+ルートからフロントとサーバを同時起動できます。
+```bash
+npm run dev
+```
+個別に起動する場合は、別ターミナルでフロントとサーバを起動します。
 ```bash
 cd server
 npm run dev   # http://localhost:3001
@@ -63,7 +67,7 @@ npm run dev   # http://localhost:5173
 - `STATIC_DIR` : 静的配信ディレクトリ（未設定時は `server/public`）
 
 ## API メモ
-- `GET /api/health` : `{ status, version }`
+- `GET /api/health` : `{ status, version, ocrEnabled }`
 - `POST /api/ocr/orientation`
   - 入力: `multipart/form-data` の `file`(png/jpeg, 50MB) または `application/json` `{ imageBase64, threshold? }`
   - 出力: `{ success: true, rotation: 0|90|180|270|null, confidence, textSample?, processingMs }`
@@ -71,23 +75,27 @@ npm run dev   # http://localhost:5173
 
 ## ビルドと配布
 ```bash
-# フロントエンドビルド（dist 作成）
-cd frontend && npm run build
+# ルートから一括ビルド
+npm run build
 
-# サーバビルド（dist/index.js）
-cd ../server && npm run build
+# 個別に行う場合:
+# cd frontend && npm run build
+# cd server && npm run build
 
 # 本番起動（ビルド済み前提）
 npm run start
 ```
 Windows 向け配布 ZIP は PowerShell で生成し、GitHub Releases の Assets として配布します。
 ```powershell
-pwsh scripts/package-win.ps1          # Node を同梱しない
-pwsh scripts/package-win.ps1 -IncludeNode  # node.exe を同梱
+pwsh scripts/package-win.ps1          # 既定で node.exe を同梱（配布先でNode.js不要）
+pwsh scripts/package-win.ps1 -NoNode  # node.exe を同梱しない（配布先でNode.jsが必要）
+# node.exe を明示する場合:
+pwsh scripts/package-win.ps1 -NodeExePath "C:\\Program Files\\nodejs\\node.exe"
 # -> release/pdfrotator-win64.zip を生成。展開後は start.cmd を実行。
 ```
 
 ## テスト・ユーティリティ
+- ルート: `npm test`（frontend + server を一括実行）
 - `frontend`: `npm test` (Vitest + RTL), `npm run lint`, `npm run measure:pages` でページ数別の初期描画計測
 - `server`: `npm test` (Vitest + Supertest)
 
