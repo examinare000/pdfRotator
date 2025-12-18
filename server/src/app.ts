@@ -190,7 +190,11 @@ export const createApp = ({ detector, config }: CreateAppOptions = {}): Applicat
   );
 
   app.get("/api/health", (_req, res) => {
-    res.json({ status: "ok", version: process.env.npm_package_version ?? "dev" });
+    res.json({
+      status: "ok",
+      version: process.env.npm_package_version ?? "dev",
+      ocrEnabled: resolvedConfig.ocrEnabled,
+    });
   });
 
   app.post("/api/ocr/orientation", upload.single("file"), async (req, res, next) => {
