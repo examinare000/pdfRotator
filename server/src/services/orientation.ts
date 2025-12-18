@@ -19,7 +19,7 @@ export interface OrientationDetector {
   detect: (input: OrientationInput) => Promise<OrientationResult>;
 }
 
-type RecognizeResult = { data?: { text?: string } };
+type RecognizeResult = { data?: { text?: string; lines?: unknown[] } };
 
 type RecognizeFn = (buffer: Buffer) => Promise<RecognizeResult>;
 
@@ -57,6 +57,68 @@ const countRecognizedCharacters = (text: string | undefined): number => {
     return 0;
   }
   return text.replace(/\s+/g, "").length;
+};
+
+const MAX_SKEW_DEGREES = 15;
+
+const toFiniteNumber = (value: unknown): number | null => {
+  if (typeof value !== "number") return null;
+  if (!Number.isFinite(value)) return null;
+  return value;
+};
+
+const getBaselineSkewDegrees = (baseline: unknown): number | null => {
+  const record = baseline && typeof baseline === "object" ? (baseline as Record<string, unknown>) : null;
+  if (!record) return null;
+
+  const x0 = toFiniteNumber(record.x0);
+  const y0 = toFiniteNumber(record.y0);
+  const x1 = toFiniteNumber(record.x1);
+  const y1 = toFiniteNumber(record.y1);
+  if (x0 === null || y0 === null || x1 === null || y1 === null) return null;
+
+  const degrees = (Math.atan2(y1 - y0, x1 - x0) * 180) / Math.PI;
+  const normalized = ((degrees % 180) + 180) % 180;
+  const skew = normalized > 90 ? 180 - normalized : normalized;
+  return skew;
+};
+
+const countRecognizedCharactersFromLines = (lines: unknown): number | null => {
+  if (!Array.isArray(lines) || lines.length === 0) {
+    return null;
+  }
+
+  let total = 0;
+  for (const rawLine of lines) {
+    const line = rawLine && typeof rawLine === "object" ? (rawLine as Record<string, unknown>) : null;
+    if (!line) continue;
+
+    const text = typeof line.text === "string" ? line.text : undefined;
+    const skew = getBaselineSkewDegrees(line.baseline);
+
+    if (skew !== null && skew > MAX_SKEW_DEGREES) {
+      continue;
+    }
+
+    total += countRecognizedCharacters(text);
+  }
+
+  return total;
+};
+
+const countRecognizedCharactersFromResult = (data: unknown): number => {
+  const record = data && typeof data === "object" ? (data as Record<string, unknown>) : null;
+  if (!record) return 0;
+
+  const countedFromLines = countRecognizedCharactersFromLines(record.lines);
+  if (countedFromLines !== null) {
+    if (countedFromLines > 0) return countedFromLines;
+    const fallbackText = typeof record.text === "string" ? record.text : undefined;
+    return countRecognizedCharacters(fallbackText);
+  }
+
+  const text = typeof record.text === "string" ? record.text : undefined;
+  return countRecognizedCharacters(text);
 };
 
 const chooseBestOrientation = (
@@ -99,7 +161,7 @@ const detectWithSweep = async (
       const rotatedBuffer = await rotateFn(buffer, orientation);
       const { data } = await recognizeFn(rotatedBuffer);
       const text = data?.text;
-      const count = countRecognizedCharacters(text);
+      const count = countRecognizedCharactersFromResult(data);
       counts.push({ orientation, count, text });
     } catch (error) {
       counts.push({ orientation, count: 0, text: undefined });
@@ -124,16 +186,32 @@ const detectWithTesseract = async (
   const rotation = normalizeRotation(data?.orientation_degrees ?? null);
   const confidence = data?.orientation_confidence ?? 0;
 
+  const isTestEnv = process.env.NODE_ENV === "test";
+  const textSampleTimeoutMs = isTestEnv
+    ? 60_000
+    : Number(process.env.OCR_TEXT_SAMPLE_TIMEOUT_MS ?? 800);
+  const shouldExtractTextSample =
+    (process.env.OCR_TEXT_SAMPLE_ENABLED ?? "true").toLowerCase() === "true" &&
+    textSampleTimeoutMs > 0 &&
+    Number.isFinite(textSampleTimeoutMs);
+
   let textSample: string | undefined;
-  try {
-    const targetBuffer =
-      rotation ? await sharp(buffer).rotate(rotation).toBuffer() : buffer;
-    const ocrResult = await Tesseract.recognize(targetBuffer);
-    textSample = normalizeTextSample(ocrResult.data?.text);
-  } catch (error) {
-    if (process.env.NODE_ENV !== "test") {
-      // eslint-disable-next-line no-console
-      console.warn("text_sample_extraction_failed", error);
+  if (shouldExtractTextSample) {
+    try {
+      const targetBuffer = rotation ? await sharp(buffer).rotate(rotation).toBuffer() : buffer;
+      const ocrPromise = Tesseract.recognize(targetBuffer);
+      const result = await Promise.race([
+        ocrPromise,
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), textSampleTimeoutMs)),
+      ]);
+      if (result) {
+        textSample = normalizeTextSample(result.data?.text);
+      }
+    } catch (error) {
+      if (process.env.NODE_ENV !== "test") {
+        // eslint-disable-next-line no-console
+        console.warn("text_sample_extraction_failed", error);
+      }
     }
   }
 
