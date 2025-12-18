@@ -16,7 +16,7 @@ export const Header: FC<HeaderProps> = ({ fileName, onReset, onHelpOpen }) => {
         </div>
         <h1>PDFビューワ & 回転スタジオ</h1>
         <p className="sub">
-          直感的なUIとショートカットでページを回転。OCRで向きを推定し、保存までノンストップ。
+          PDFのページを快適に閲覧・回転させるためのツールです。OCRによる向き推定機能も搭載しています。
         </p>
         <div className="badges">
           <span className="pill pill--ghost">矢印キー操作</span>
