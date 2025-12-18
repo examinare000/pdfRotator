@@ -6,6 +6,8 @@ import { renderPageToCanvas } from "./lib/pdf";
 import { savePdfWithRotation } from "./lib/pdf-save";
 import { detectOrientationForPage, type OrientationSuggestion } from "./lib/ocr";
 import { clampPageNumber } from "./lib/rotation";
+import { computeFitToWidthZoom } from "./lib/fit";
+import { fetchHealth, type HealthInfo } from "./lib/health";
 import "./App.css";
 
 const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
@@ -62,6 +64,8 @@ function App() {
   } = useViewerState({ loader: pdfLoader });
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const canvasContainerRef = useRef<HTMLDivElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const dragDepthRef = useRef(0);
   const [fileName, setFileName] = useState<string>("");
   const [originalBuffer, setOriginalBuffer] = useState<ArrayBuffer | null>(null);
@@ -75,6 +79,9 @@ function App() {
   const [ocrThreshold, setOcrThreshold] = useState(DEFAULT_OCR_THRESHOLD);
   const [pageInput, setPageInput] = useState<string>("1");
   const [dragging, setDragging] = useState(false);
+  const [fitToWidth, setFitToWidth] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
+  const [health, setHealth] = useState<HealthInfo | null>(null);
 
   const handleFile = async (file: File) => {
     if (!isPdfFile(file)) {
@@ -144,6 +151,9 @@ function App() {
     if (!state.pdfDoc || !canvasRef.current || state.status !== "ready") {
       return;
     }
+    if (typeof (state.pdfDoc as any)?.getPage !== "function") {
+      return;
+    }
     let cancelled = false;
     const run = async () => {
       setRenderState("rendering");
@@ -170,6 +180,48 @@ function App() {
       cancelled = true;
     };
   }, [state.pdfDoc, state.currentPage, state.rotationMap, state.zoom, state.status]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const run = async () => {
+      try {
+        const next = await fetchHealth();
+        if (!cancelled) setHealth(next);
+      } catch {
+        if (!cancelled) setHealth(null);
+      }
+    };
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const applyFitToWidth = useCallback(() => {
+    if (!fitToWidth) return;
+    if (state.status !== "ready") return;
+    const container = canvasContainerRef.current;
+    const canvas = canvasRef.current;
+    if (!container || !canvas) return;
+
+    const nextZoom = computeFitToWidthZoom({
+      currentZoom: state.zoom,
+      canvasWidth: canvas.width,
+      containerWidth: container.clientWidth,
+      padding: 24,
+    });
+    if (!nextZoom) return;
+    if (Math.abs(nextZoom - state.zoom) < 0.02) return;
+    setZoom(nextZoom);
+  }, [fitToWidth, setZoom, state.status, state.zoom]);
+
+  useEffect(() => {
+    if (!fitToWidth) return;
+    applyFitToWidth();
+    const handler = () => applyFitToWidth();
+    window.addEventListener("resize", handler);
+    return () => window.removeEventListener("resize", handler);
+  }, [fitToWidth, applyFitToWidth, state.currentPage, state.rotationMap, renderState]);
 
   const handleSave = useCallback(async () => {
     if (!originalBuffer || originalBuffer.byteLength === 0 || state.status !== "ready") {
@@ -246,6 +298,11 @@ function App() {
     setOcrError(null);
     setOcrLoading(false);
     setRenderState("idle");
+    setFitToWidth(false);
+  };
+
+  const handleReselectPdf = () => {
+    fileInputRef.current?.click();
   };
 
   const handlePageJump = () => {
@@ -263,6 +320,10 @@ function App() {
   };
 
   const handleDetectOrientation = async () => {
+    if (health && !health.ocrEnabled) {
+      setOcrError("OCRは無効化されています");
+      return;
+    }
     if (!state.pdfDoc) {
       setOcrError("PDFを読み込んでから実行してください");
       return;
@@ -305,6 +366,9 @@ function App() {
         : `${ocrSuggestion.rotation}° / 信頼度 ${ocrSuggestion.confidence.toFixed(2)}`
       : "未推定";
 
+  const toastText = ocrError ?? message;
+  const versionText = health?.version ? `v${health.version}` : "v--";
+
   return (
     <div className="app">
       <div className="glow glow--one" />
@@ -327,6 +391,9 @@ function App() {
           </div>
         </div>
         <div className="header-actions">
+          <button type="button" onClick={() => setHelpOpen(true)} aria-label="ヘルプを開く">
+            ヘルプ
+          </button>
           <div className="file-chip">
             <span className="chip-label">選択中</span>
             <span className="chip-value">{fileName || "未選択"}</span>
@@ -350,8 +417,13 @@ function App() {
                 <span className="meta-badge">ズーム {state.zoom.toFixed(2)}x</span>
               </div>
             </div>
-            <div className="viewer__canvas">
+            <div className="viewer__canvas" ref={canvasContainerRef}>
               {!state.pdfDoc && <div className="placeholder">PDFを読み込むとここに表示されます</div>}
+              {renderState === "rendering" && state.pdfDoc && (
+                <div className="viewer__overlay" role="status" aria-label="描画中">
+                  描画中...
+                </div>
+              )}
               <canvas ref={canvasRef} />
             </div>
             <div className="viewer__actions">
@@ -386,9 +458,12 @@ function App() {
               </div>
               <div className="upload__controls">
                 <label className="upload__btn">
-                  <input type="file" accept="application/pdf" onChange={handleFileInput} />
+                  <input ref={fileInputRef} type="file" accept="application/pdf" onChange={handleFileInput} />
                   ファイルを選択
                 </label>
+                <button type="button" onClick={handleReselectPdf} disabled={state.status === "loading"}>
+                  元PDFを再選択
+                </button>
               </div>
             </div>
           </section>
@@ -456,7 +531,7 @@ function App() {
               <div className="button-row">
                 <button
                   onClick={handleDetectOrientation}
-                  disabled={state.status !== "ready" || ocrLoading}
+                  disabled={state.status !== "ready" || ocrLoading || (health?.ocrEnabled === false)}
                 >
                   {ocrLoading ? "推定中..." : "向き推定"}
                 </button>
@@ -480,7 +555,13 @@ function App() {
                     <span className="pill pill--render">処理 {ocrSuggestion.processingMs}ms</span>
                   )}
                 </div>
-                <p className="hint">現在のページを画像化し、サーバーで向きを推定します（しきい値 {ocrThreshold}）。</p>
+                {health?.ocrEnabled === false ? (
+                  <p className="hint">OCRが無効化されています（`OCR_ENABLED=false`）。</p>
+                ) : (
+                  <p className="hint">
+                    現在のページを画像化し、サーバーで向きを推定します（しきい値 {ocrThreshold}）。
+                  </p>
+                )}
                 {ocrSuggestion && <p className="hint">推定対象ページ: {ocrSuggestion.page}</p>}
                 {ocrError && <span className="error-text">{ocrError}</span>}
               </div>
@@ -499,12 +580,26 @@ function App() {
             <div className="controls__group">
               <p className="label">ズーム</p>
               <div className="button-row">
-                <button onClick={() => setZoom(state.zoom - 0.25)} disabled={state.status === "idle"}>
+                <button onClick={() => setZoom(state.zoom - 0.25)} disabled={state.status === "idle" || fitToWidth}>
                   -
                 </button>
                 <span className="page-indicator">{state.zoom.toFixed(2)}x</span>
-                <button onClick={() => setZoom(state.zoom + 0.25)} disabled={state.status === "idle"}>
+                <button onClick={() => setZoom(state.zoom + 0.25)} disabled={state.status === "idle" || fitToWidth}>
                   +
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const next = !fitToWidth;
+                    setFitToWidth(next);
+                    if (next) {
+                      applyFitToWidth();
+                    }
+                  }}
+                  disabled={state.status !== "ready"}
+                  aria-pressed={fitToWidth}
+                >
+                  幅に合わせる
                 </button>
               </div>
             </div>
@@ -533,6 +628,48 @@ function App() {
           </section>
         </div>
       </div>
+
+      <footer className="app__footer">
+        <span className="footer-item">PDF Rotator</span>
+        <span className="footer-item">{versionText}</span>
+        <span className="footer-item">→/←: 回転+次ページ</span>
+        <span className="footer-item">Ctrl/Cmd+S: 保存</span>
+      </footer>
+
+      {toastText && (
+        <div className="toast" role="status" aria-label="通知">
+          <span>{toastText}</span>
+          <button type="button" onClick={() => { setMessage(null); setOcrError(null); }}>
+            閉じる
+          </button>
+        </div>
+      )}
+
+      {helpOpen && (
+        <div className="modal" role="dialog" aria-modal="true" aria-label="ヘルプ">
+          <div className="modal__backdrop" onClick={() => setHelpOpen(false)} />
+          <div className="modal__card">
+            <div className="modal__header">
+              <h2>ヘルプ</h2>
+              <button type="button" onClick={() => setHelpOpen(false)} aria-label="閉じる">
+                ×
+              </button>
+            </div>
+            <div className="modal__body">
+              <p className="hint">
+                PDFはブラウザ内で処理します。OCR実行時のみ、現在ページの画像をサーバへ送信します。
+              </p>
+              <p className="label">ショートカット</p>
+              <ul className="help-list">
+                <li>→: +90° 回転して次ページ</li>
+                <li>←: -90° 回転して次ページ</li>
+                <li>↓ / ↑: ページ移動</li>
+                <li>Ctrl/Cmd + S: 回転を適用して保存</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
