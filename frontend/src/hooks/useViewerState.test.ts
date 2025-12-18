@@ -105,6 +105,16 @@ describe("useViewerState", () => {
     expect(result.current.state.rotationMap[2]).toBe(0);
   });
 
+  it("任意ページを回転でき、現在ページは変わらない", () => {
+    const { result } = renderHook(() => useViewerState());
+    act(() => result.current.loadDocument(makeDoc(3)));
+
+    act(() => result.current.rotatePage(3, 90));
+
+    expect(result.current.state.currentPage).toBe(1);
+    expect(result.current.state.rotationMap[3]).toBe(90);
+  });
+
   it("zoomは下限・上限でクランプする", () => {
     const { result } = renderHook(() => useViewerState());
 

@@ -5,7 +5,7 @@ import { useViewerState } from "./hooks/useViewerState";
 import { renderPageToCanvas } from "./lib/pdf";
 import { savePdfWithRotation } from "./lib/pdf-save";
 import { detectOrientationForPage, type OrientationSuggestion } from "./lib/ocr";
-import { clampPageNumber } from "./lib/rotation";
+import { applyRotationChange, clampPageNumber } from "./lib/rotation";
 import { computeFitToWidthZoom } from "./lib/fit";
 import { fetchHealth, type HealthInfo } from "./lib/health";
 import { Header } from "./components/Header";
@@ -14,7 +14,7 @@ import { ShortcutsPanel } from "./components/ShortcutsPanel";
 import { UploadPanel } from "./components/UploadPanel";
 import "./App.css";
 
-const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
+const MAX_FILE_SIZE = 200 * 1024 * 1024; // 200MB
 const DEFAULT_OCR_THRESHOLD = 0.6;
 
 type RenderState = "idle" | "rendering" | "error";
@@ -63,6 +63,7 @@ function App() {
     nextPage,
     prevPage,
     rotateCurrentPage,
+    rotatePage,
     setZoom,
     reset,
   } = useViewerState({ loader: pdfLoader });
@@ -80,12 +81,14 @@ function App() {
   );
   const [ocrError, setOcrError] = useState<string | null>(null);
   const [ocrLoading, setOcrLoading] = useState(false);
+  const [ocrProgress, setOcrProgress] = useState<{ current: number; total: number; page: number } | null>(null);
   const [ocrThreshold, setOcrThreshold] = useState(DEFAULT_OCR_THRESHOLD);
   const [pageInput, setPageInput] = useState<string>("1");
   const [dragging, setDragging] = useState(false);
   const [fitToWidth, setFitToWidth] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [health, setHealth] = useState<HealthInfo | null>(null);
+  const ocrAbortRef = useRef<AbortController | null>(null);
 
   const handleFile = async (file: File) => {
     if (!isPdfFile(file)) {
@@ -93,7 +96,7 @@ function App() {
       return;
     }
     if (file.size > MAX_FILE_SIZE) {
-      setMessage("ファイルサイズは50MB以内にしてください");
+      setMessage("ファイルサイズは200MB以内にしてください");
       return;
     }
     setMessage(null);
@@ -227,8 +230,10 @@ function App() {
     return () => window.removeEventListener("resize", handler);
   }, [fitToWidth, applyFitToWidth, state.currentPage, state.rotationMap, renderState]);
 
+  const canSave = originalBuffer !== null && originalBuffer.byteLength > 0 && state.status === "ready";
+
   const handleSave = useCallback(async () => {
-    if (!originalBuffer || originalBuffer.byteLength === 0 || state.status !== "ready") {
+    if (!canSave) {
       setMessage("PDFが読み込まれていません");
       return;
     }
@@ -242,7 +247,7 @@ function App() {
       const text = error instanceof Error ? error.message : "保存に失敗しました";
       setMessage(text);
     }
-  }, [originalBuffer, state.rotationMap, state.status, fileName]);
+  }, [canSave, originalBuffer, state.rotationMap, fileName]);
 
   useEffect(() => {
     if (state.status === "error") {
@@ -261,12 +266,10 @@ function App() {
         case "ArrowRight":
           e.preventDefault();
           rotateCurrentPage(90);
-          nextPage();
           break;
         case "ArrowLeft":
           e.preventDefault();
           rotateCurrentPage(-90);
-          nextPage();
           break;
         case "ArrowDown":
           e.preventDefault();
@@ -294,6 +297,7 @@ function App() {
   }, [state.status, rotateCurrentPage, nextPage, prevPage, originalBuffer, state.rotationMap, fileName, handleSave]);
 
   const handleReset = () => {
+    ocrAbortRef.current?.abort();
     reset();
     setOriginalBuffer(null);
     setFileName("");
@@ -301,6 +305,7 @@ function App() {
     setOcrSuggestion(null);
     setOcrError(null);
     setOcrLoading(false);
+    setOcrProgress(null);
     setRenderState("idle");
     setFitToWidth(false);
   };
@@ -323,6 +328,12 @@ function App() {
     setMessage(null);
   };
 
+  useEffect(() => {
+    return () => {
+      ocrAbortRef.current?.abort();
+    };
+  }, []);
+
   const handleDetectOrientation = async () => {
     if (health && !health.ocrEnabled) {
       setOcrError("OCRは無効化されています");
@@ -332,35 +343,72 @@ function App() {
       setOcrError("PDFを読み込んでから実行してください");
       return;
     }
+
+    ocrAbortRef.current?.abort();
+    const abortController = new AbortController();
+    ocrAbortRef.current = abortController;
+
+    const fetcher: typeof fetch = (input, init) =>
+      fetch(input, { ...init, signal: abortController.signal });
+
+    const startPage = state.currentPage;
+    const endPage = state.numPages;
+    const total = Math.max(0, endPage - startPage + 1);
+
     setOcrLoading(true);
     setOcrError(null);
+    setOcrProgress(total > 0 ? { current: 0, total, page: startPage } : null);
+
     try {
-      const suggestion = await detectOrientationForPage(state.pdfDoc, state.currentPage, {
-        fetcher: fetch,
-        threshold: ocrThreshold,
-      });
-      setOcrSuggestion(suggestion);
+      let workingRotationMap = state.rotationMap;
+      const errors: Array<{ page: number; message: string }> = [];
+
+      for (let pageNumber = startPage; pageNumber <= endPage; pageNumber += 1) {
+        if (abortController.signal.aborted) {
+          throw new Error("OCR処理が中断されました");
+        }
+
+        setOcrProgress({
+          current: pageNumber - startPage + 1,
+          total,
+          page: pageNumber,
+        });
+
+        try {
+          const suggestion = await detectOrientationForPage(state.pdfDoc, pageNumber, {
+            fetcher,
+            threshold: ocrThreshold,
+          });
+          setOcrSuggestion(suggestion);
+
+          if (suggestion.rotation === null) {
+            continue;
+          }
+
+          const currentRotation = workingRotationMap[pageNumber] ?? 0;
+          const delta = suggestion.rotation - currentRotation;
+          if (delta === 0) {
+            continue;
+          }
+
+          rotatePage(pageNumber, delta);
+          workingRotationMap = applyRotationChange(workingRotationMap, pageNumber, delta);
+        } catch (error) {
+          const text = error instanceof Error ? error.message : "OCRの推定に失敗しました";
+          errors.push({ page: pageNumber, message: text });
+        }
+      }
+
+      if (errors.length > 0) {
+        setOcrError(`${errors.length}ページでOCRに失敗しました（例: ${errors[0].page}ページ）`);
+      }
     } catch (error) {
       const text = error instanceof Error ? error.message : "OCRの推定に失敗しました";
-      setOcrSuggestion(null);
       setOcrError(text);
     } finally {
       setOcrLoading(false);
+      setOcrProgress(null);
     }
-  };
-
-  const handleApplySuggestion = () => {
-    if (!ocrSuggestion || ocrSuggestion.rotation === null) {
-      return;
-    }
-    if (ocrSuggestion.page !== state.currentPage) {
-      setOcrError("推定結果が現在のページと一致しません");
-      return;
-    }
-    const currentRotation = state.rotationMap[state.currentPage] ?? 0;
-    const delta = ocrSuggestion.rotation - currentRotation;
-    rotateCurrentPage(delta);
-    setOcrError(null);
   };
 
   const suggestionText =
@@ -410,7 +458,7 @@ function App() {
               <button
                 className="save-btn"
                 onClick={() => handleSave()}
-                disabled={!originalBuffer || state.status !== "ready"}
+                disabled={!canSave}
               >
                 適用して保存 (Ctrl+S)
               </button>
@@ -501,17 +549,6 @@ function App() {
                 >
                   {ocrLoading ? "推定中..." : "向き推定"}
                 </button>
-                <button
-                  onClick={handleApplySuggestion}
-                  disabled={
-                    state.status !== "ready"
-                    || !ocrSuggestion
-                    || ocrSuggestion.rotation === null
-                    || ocrSuggestion.page !== state.currentPage
-                  }
-                >
-                  提案を適用
-                </button>
               </div>
               <div className="ocr-status">
                 <div className="ocr-summary">
@@ -520,12 +557,17 @@ function App() {
                   {ocrSuggestion?.processingMs !== undefined && (
                     <span className="pill pill--render">処理 {ocrSuggestion.processingMs}ms</span>
                   )}
+                  {ocrProgress && (
+                    <span className="pill pill--render">
+                      {ocrProgress.current}/{ocrProgress.total}（{ocrProgress.page}ページ）
+                    </span>
+                  )}
                 </div>
                 {health?.ocrEnabled === false ? (
                   <p className="hint">OCRが無効化されています（`OCR_ENABLED=false`）。</p>
                 ) : (
                   <p className="hint">
-                    現在のページを画像化し、サーバーで向きを推定します（しきい値 {ocrThreshold}）。
+                    現在ページ以降を順番に画像化し、サーバーで向きを推定して自動適用します（しきい値 {ocrThreshold}）。
                   </p>
                 )}
                 {ocrSuggestion && <p className="hint">推定対象ページ: {ocrSuggestion.page}</p>}
@@ -602,8 +644,8 @@ function App() {
               </p>
               <p className="label">ショートカット</p>
               <ul className="help-list">
-                <li>→: +90° 回転して次ページ</li>
-                <li>←: -90° 回転して次ページ</li>
+                <li>→: +90° 回転</li>
+                <li>←: -90° 回転</li>
                 <li>↓ / ↑: ページ移動</li>
                 <li>Ctrl/Cmd + S: 回転を適用して保存</li>
               </ul>

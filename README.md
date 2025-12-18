@@ -57,12 +57,12 @@ npm run dev   # http://localhost:3001
 cd ../frontend
 npm run dev   # http://localhost:5173
 ```
-デフォルトの CORS 設定は `CORS_ORIGIN=http://localhost:5173` です。フロントは `/api/*` をサーバへプロキシせず直接呼び出します。
+デフォルトの CORS 設定は `CORS_ORIGIN=http://localhost:5173` です。開発時は `frontend/vite.config.ts` の proxy により、フロントから `/api/*` を相対パスのまま `http://localhost:3001` へ転送します。
 
 ## サーバ環境変数 (`server/.env`)
 - `PORT` (default: 3001)
 - `CORS_ORIGIN` : 許可するオリジン
-- `OCR_TIMEOUT_MS` : OCR タイムアウト（ms）
+- `OCR_TIMEOUT_MS` : OCR タイムアウト（ms, 目安: 8000）
 - `OCR_ENABLED` : `false` で OCR API を無効化
 - `STATIC_DIR` : 静的配信ディレクトリ（未設定時は `server/public`）
 
@@ -100,7 +100,7 @@ pwsh scripts/package-win.ps1 -NodeExePath "C:\\Program Files\\nodejs\\node.exe"
 - `server`: `npm test` (Vitest + Supertest)
 
 ## 使い方のヒント
-- 50MB 以内の PDF を `ファイルを選択` で読み込み。状態はリセットボタンで初期化。
-- 回転はボタンまたはキーボード（→/← で回転＋次ページ）。ズームは 0.25〜3.0x にクランプ。
-- 「向き推定」で現在ページを OCR し、信頼度と推定角度を表示。「提案を適用」で回転に反映。
+- 200MB 以内の PDF を `ファイルを選択` で読み込み。状態はリセットボタンで初期化。
+- 回転はボタンまたはキーボード（→/← で回転）。ズームは 0.25〜3.0x にクランプ。
+- 「向き推定」で現在ページ以降を OCR して信頼度と推定角度を表示し、提案を自動で回転に反映。
 - 「適用して保存」または Ctrl/Cmd+S で回転を焼き込んだ PDF をダウンロード。

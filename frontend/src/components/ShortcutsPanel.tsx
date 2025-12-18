@@ -6,11 +6,11 @@ export const ShortcutsPanel: FC = () => (
     <div className="shortcut-grid">
       <div className="shortcut-card">
         <span className="kbd">→</span>
-        <span>+90° 回転して次ページ</span>
+        <span>+90° 回転</span>
       </div>
       <div className="shortcut-card">
         <span className="kbd">←</span>
-        <span>-90° 回転して次ページ</span>
+        <span>-90° 回転</span>
       </div>
       <div className="shortcut-card">
         <span className="kbd">↓ / ↑</span>

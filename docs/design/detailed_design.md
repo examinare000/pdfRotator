@@ -9,22 +9,23 @@
 - 表示：PDFプレビュー、ズーム、ページ移動、回転表示。
 - 編集：ページ単位回転保持、90度単位、適用で生成。
 - 保存：ローカルに `rotated.pdf` ダウンロード。
-- 操作性：矢印キー操作（→ 右回転+次ページ、← 左回転+次ページ、↓ 次ページ、↑ 前ページ）、クリック操作。
-- OCR：任意ページの向き推定（レコメンド表示のみ、適用はユーザー操作）。
+- 操作性：矢印キー操作（→ 右回転、← 左回転、↓ 次ページ、↑ 前ページ）、クリック操作。
+- OCR：現在ページ以降の向き推定（推定結果を自動適用）。
 - 非機能：100ページ3秒以内初期表示、安全性（XSS/CSRF、依存CVE確認）、主要ブラウザ互換。
 
 ## 3. システム構成
 - フロント：React + TypeScript + Vite、PDF.js（レンダリング）、pdf-lib（回転適用・保存）。PDF.js workerは `public/pdf.worker.js` として分離。
 - バックエンド：Express + TypeScript、OCR APIのみ（CORS限定）。ログ: morgan + winston。
 - OCR：Tesseract.js（Node）。入力PNG/JPEG→orientation/confidence→JSON返却。
+- 開発時：Vite dev server（例:5173）は `/api/*` をバックエンド（例:3001）へプロキシして、フロント実装は `/api/...` の相対パスのままにする。
 - 配布・ホスティング：フロントはViteビルド成果物を `server/public` に同梱し、Expressで静的配信+SPAフォールバック。Windows配布は zip 解凍 + `start.cmd` 実行のみで利用可能。
 
 ## 4. ユースケース/画面フロー
 1) 初期表示：アップロードエリアのみ表示。  
-2) PDF選択：ドラッグ&ドロップ/ファイル選択。拡張子/サイズ(上限例:50MB)検証 → PDF.js でロード → 1ページ目描画。  
+2) PDF選択：ドラッグ&ドロップ/ファイル選択。拡張子/サイズ(上限例:200MB)検証 → PDF.js でロード → 1ページ目描画。  
 3) ページ移動：UIボタン/ページ番号入力/↑↓。見開きやサムネイルなし（シンプル）。  
 4) 回転：ページ単位。右回転/左回転ボタン or →/← で90度単位変更し即時再描画。  
-5) OCRレコメンド：現在ページの画像をPNG化→/api/ocr/orientation 呼び出し→推定角度と信頼度をUIに表示し「提案を適用」ボタンで回転マップに反映。  
+5) OCRレコメンド：現在ページ以降を順番に画像化→/api/ocr/orientation 呼び出し→推定角度と信頼度をUIに表示し、推定結果を回転マップに自動反映。  
 6) 保存（適用）：`適用` クリックでpdf-libが元PDFに回転値を適用→Blob→`rotated.pdf` を自動ダウンロード。  
 7) エラー動線：アップロード失敗/破損→モーダル通知。OCR失敗→トーストと再試行。保存失敗→代替表示（新規タブにBlob URL）。  
 8) 再アップロード：新しいPDF選択時は状態をリセット（pageRotationMap/ocrSuggestion/zoom）。
@@ -32,11 +33,11 @@
 ## 5. フロントエンド詳細
 - コンポーネント
   - `App`: グローバル状態管理、ショートカット登録、レイアウト。
-  - `UploadPane`: DnD/ファイル入力、バリデーション（拡張子: pdf、サイズ: 50MB以内）。
+  - `UploadPane`: DnD/ファイル入力、バリデーション（拡張子: pdf、サイズ: 200MB以内）。
   - `Viewer`: PDF.jsでページ描画、ローディング・エラーハンドリング、キャンバス再利用。
   - `PageControls`: 現在ページ表示/入力、前後移動、全ページ数表示。
   - `RotateControls`: 左右回転、適用（保存）ボタン。
-  - `OrientationPanel`: OCRしきい値入力、推定結果表示、提案の適用ボタン。
+  - `OrientationPanel`: OCRしきい値入力、推定結果表示（現在ページ以降を順番に推定して自動適用）。
   - `Toolbar`: ズームイン/アウト/フィット幅、ダウンロードショートカット表示。
 - 状態/型（例）
   - `pdfDoc: PDFDocumentProxy | null`
@@ -56,8 +57,8 @@
   - 描画時：PDF.js viewport に現在の rotation を加算して render。
 - キーボード操作
   - `keydown` グローバルリスナ。フォーム入力中は無効化。
-  - →: rotate +90, move next (境界はnumPagesで止まる)
-  - ←: rotate -90, move next (負数はnormalize)
+  - →: rotate +90
+  - ←: rotate -90
   - ↓: next page, ↑: prev page
   - `Ctrl+S` はブラウザ保存を防ぎ、`適用` 相当の保存を実行（確認ダイアログなし）。
 - エラー/UX
@@ -91,9 +92,10 @@
   - オプション: `csrf`（Cookie運用時）、JWTの場合はトークン検証ミドルウェア
 - OCR処理
   - `OCR_ENABLED=false` なら 503 を返す。
-  - タイムアウト: `OCR_TIMEOUT_MS`（例:1500ms）で `Promise.race`。504で応答。
-  - 優先戦略: `Tesseract.detect(buffer)` → `orientation_degrees` を 90 度単位に正規化、`orientation_confidence` を返却し、1回の `recognize` で `textSample` を返す。
-  - フォールバック戦略: カスタム `recognize/rotate` が注入された場合や detect 失敗時に、0/90/180/270 の各回転を `recognize` し、文字数最大の回転を採用（confidence は比率）。
+- タイムアウト: `OCR_TIMEOUT_MS`（例:1500ms）で `Promise.race`。504で応答。
+- 優先戦略: `Tesseract.detect(buffer)` → `orientation_degrees` を 90 度単位に正規化、`orientation_confidence` を返却し、1回の `recognize` で `textSample` を返す。
+- フォールバック戦略: カスタム `recognize/rotate` が注入された場合や detect 失敗時に、0/90/180/270 の各回転を `recognize` し、文字数最大の回転を採用（confidence は比率）。
+  - `textSample` はベストエフォート（短時間で取得できなければ省略）とし、向き推定のレスポンスを遅延させない。
   - 信頼度 < threshold の場合は `rotation: null` で返す。
   - 画像はメモリ上でのみ保持し、保存しない。multer メモリストレージを使用。Base64 とファイルで同じバリデーションを共有。
 - ロギング
@@ -105,6 +107,7 @@
 - 静的配信: `server/public` を `express.static` で配信し、非APIパスは `index.html` を返す（SPAフォールバック）。
 - 配布: `scripts/package-win.ps1` により `frontend` をビルドし `server/public` に配置、`server` をビルド、必要なランタイムを `release/pdfrotator-win64.zip` にまとめる。node.exe は既定で同梱され、利用者は解凍して `start.cmd` を実行するだけで起動（配布先で Node.js 不要）。node.exe を同梱しない場合は `-NoNode` を使用する。
 - 設定: `STATIC_DIR` 環境変数で静的配信パスを上書き可能（未設定時は `server/public`）。OCR設定は `OCR_ENABLED`, `OCR_TIMEOUT_MS`, `CORS_ORIGIN` を使用。
+  - `OCR_TIMEOUT_MS` は環境依存で調整する（目安: 8000ms）。重い環境ではより長くする。
 
 ## 7. PDF処理・保存ロジック（フロント）
 - 保存手順
@@ -140,7 +143,7 @@
   - `OCR_ENABLED=false` の 503 応答。
 - 結合/E2E
   - PDFロード→回転→保存で回転がPDFに反映されること（Playwright + pdf-lib で検証）。
-  - OCR API モックでレコメンド→提案適用→保存までのシナリオ。
+  - OCR API モックでレコメンド→自動適用→保存までのシナリオ。
   - 100ページPDFで初期表示時間が3秒以内か計測。
 - 非機能/セキュリティ
   - OWASP ZAP による簡易DAST（XSS/CSRF エンドポイント確認）。
