@@ -25,7 +25,9 @@ export const promiseWithTimeout = async <T>(promise: Promise<T>, timeoutMs: numb
       promise,
       new Promise<T>((_, reject) => {
         timeoutId = setTimeout(() => {
-          reject(new RequestError(504, "ocr_timeout", "OCR処理がタイムアウトしました"));
+          reject(
+            new RequestError(504, "ocr_timeout", "OCR処理がタイムアウトしました", { retryable: true })
+          );
         }, timeoutMs);
       }),
     ]);

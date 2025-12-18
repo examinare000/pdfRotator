@@ -64,6 +64,29 @@ describe("requestOrientation", () => {
       "OCRのリクエストに失敗しました: bad"
     );
   });
+
+  it("HTTPエラーでもJSONメッセージがあればそれを表示する", async () => {
+    const fetcher = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 500,
+      json: async () => ({
+        success: false,
+        message: "内部エラーが発生しました",
+      }),
+    });
+
+    await expect(requestOrientation("data", { fetcher })).rejects.toThrow(
+      "OCRのリクエストに失敗しました (HTTP 500): 内部エラーが発生しました"
+    );
+  });
+
+  it("fetch自体が失敗した場合はネットワークエラー扱いにする", async () => {
+    const fetcher = vi.fn().mockRejectedValue(new Error("connection refused"));
+
+    await expect(requestOrientation("data", { fetcher })).rejects.toThrow(
+      "OCRのリクエストに失敗しました: ネットワークエラー"
+    );
+  });
 });
 
 describe("detectOrientationFromPage", () => {

@@ -22,7 +22,7 @@ export const buildConfig = (override?: Partial<AppConfig>): AppConfig => {
   return {
     corsOrigin: process.env.CORS_ORIGIN ?? "*",
     ocrEnabled: ocrEnabledEnv.toLowerCase() !== "false",
-    ocrTimeoutMs: Number(process.env.OCR_TIMEOUT_MS ?? 1500),
+    ocrTimeoutMs: Number(process.env.OCR_TIMEOUT_MS ?? 8000),
     staticDir: override?.staticDir
       ?? process.env.STATIC_DIR
       ?? fallbackStaticDir,

@@ -51,6 +51,23 @@ export type DetectOrientationForPageOptions = OrientationRequestOptions & {
 const DEFAULT_THRESHOLD = 0.6;
 const DEFAULT_ENDPOINT = "/api/ocr/orientation";
 
+const safeReadJson = async (res: unknown): Promise<unknown | null> => {
+  if (!res || typeof res !== "object") {
+    return null;
+  }
+
+  const maybeResponse = res as { json?: () => Promise<unknown> };
+  if (typeof maybeResponse.json === "function") {
+    try {
+      return await maybeResponse.json();
+    } catch {
+      return null;
+    }
+  }
+
+  return null;
+};
+
 export const renderPageToPng = async (
   page: PdfPageProxy,
   options: RenderPageToPngOptions = {}
@@ -75,19 +92,28 @@ export const requestOrientation = async (
   const threshold = options.threshold ?? DEFAULT_THRESHOLD;
   const endpoint = options.endpoint ?? DEFAULT_ENDPOINT;
 
-  const res = await fetcher(endpoint, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ imageBase64, threshold }),
-  });
+  let res: Response;
+  try {
+    res = await fetcher(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ imageBase64, threshold }),
+    });
+  } catch (error) {
+    throw new Error("OCRのリクエストに失敗しました: ネットワークエラー", { cause: error });
+  }
 
-  const data = res?.ok ? await res.json() : null;
+  const data = await safeReadJson(res);
 
-  if (!res?.ok || !data?.success) {
-    const fallback = "OCRのリクエストに失敗しました";
+  const dataRecord = data && typeof data === "object" ? (data as Record<string, unknown>) : null;
+
+  if (!res?.ok || !dataRecord?.success) {
+    const httpStatus =
+      typeof res?.status === "number" && res.status > 0 ? ` (HTTP ${res.status})` : "";
+    const fallback = `OCRのリクエストに失敗しました${httpStatus}`;
     const message =
-      data?.message && typeof data.message === "string"
-        ? `${fallback}: ${data.message}`
+      typeof dataRecord?.message === "string"
+        ? `${fallback}: ${dataRecord.message}`
         : fallback;
     throw new Error(message);
   }

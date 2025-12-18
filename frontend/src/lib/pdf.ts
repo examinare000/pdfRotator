@@ -53,7 +53,10 @@ export const createPdfLoader = (pdfjs: PdfJsLike) => {
       }
 
       try {
-        const task = pdfjs.getDocument({ data: buffer });
+        // pdfjs-dist は内部で ArrayBuffer を Worker に transfer し、呼び出し元の buffer が
+        // detached（byteLength=0）になる場合があるため、常にコピーを渡す。
+        const bufferForPdfJs = buffer.slice(0);
+        const task = pdfjs.getDocument({ data: bufferForPdfJs });
         return await task.promise;
       } catch (error) {
         throw new Error("PDFの読み込みに失敗しました", { cause: error as Error });
