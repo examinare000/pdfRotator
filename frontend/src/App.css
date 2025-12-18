@@ -400,6 +400,19 @@ button:disabled {
   overflow: hidden;
 }
 
+.viewer__overlay {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  z-index: 2;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  color: var(--text);
+  background: rgba(3, 6, 16, 0.55);
+  backdrop-filter: blur(6px);
+}
+
 .viewer__canvas::after {
   content: "";
   position: absolute;
@@ -529,4 +542,94 @@ button:disabled {
   .workspace__side {
     grid-template-columns: 1fr;
   }
+}
+
+.app__footer {
+  margin-top: 18px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.footer-item {
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.toast {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  max-width: min(480px, calc(100vw - 32px));
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: rgba(7, 12, 24, 0.92);
+  color: var(--text);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.35);
+  z-index: 50;
+}
+
+.toast button {
+  padding: 8px 10px;
+}
+
+.modal {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+}
+
+.modal__backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(3, 6, 16, 0.65);
+}
+
+.modal__card {
+  position: relative;
+  width: min(640px, calc(100vw - 40px));
+  border-radius: 18px;
+  border: 1px solid var(--border);
+  background: rgba(7, 12, 24, 0.96);
+  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.55);
+  padding: 16px;
+  backdrop-filter: blur(10px);
+}
+
+.modal__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.modal__header h2 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.modal__body {
+  display: grid;
+  gap: 10px;
+}
+
+.help-list {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--text);
+  font-weight: 700;
 }

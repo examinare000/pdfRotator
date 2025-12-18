@@ -87,7 +87,8 @@ describe("App", () => {
 
     fireEvent.drop(dropzone, { dataTransfer: { files: [file] } });
 
-    expect(await screen.findByText("PDFファイルを選択してください")).toBeInTheDocument();
+    const messages = await screen.findAllByText("PDFファイルを選択してください");
+    expect(messages.length).toBeGreaterThan(0);
   });
 
   it("DnDで50MB超のPDFをドロップするとエラーメッセージを表示する", async () => {
@@ -100,7 +101,8 @@ describe("App", () => {
 
     fireEvent.drop(dropzone, { dataTransfer: { files: [file] } });
 
-    expect(await screen.findByText("ファイルサイズは50MB以内にしてください")).toBeInTheDocument();
+    const messages = await screen.findAllByText("ファイルサイズは50MB以内にしてください");
+    expect(messages.length).toBeGreaterThan(0);
   });
 
   it("DnDで有効なPDFをドロップすると読み込み処理を実行する", async () => {
@@ -166,5 +168,18 @@ describe("App", () => {
     await waitFor(() => expect(mockDetectOrientationForPage).toHaveBeenCalledTimes(1));
     const [, , options] = mockDetectOrientationForPage.mock.calls[0];
     expect(options).toMatchObject({ threshold: 0.8 });
+  });
+
+  it("ヘルプモーダルを開閉できる", async () => {
+    mockUseViewerState.mockReturnValue(makeViewerHook());
+    render(<App />);
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole("button", { name: "ヘルプを開く" }));
+    expect(await screen.findByRole("dialog", { name: "ヘルプ" })).toBeInTheDocument();
+    expect(screen.getAllByText("ショートカット").length).toBeGreaterThan(0);
+
+    await user.click(screen.getByRole("button", { name: "閉じる" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "ヘルプ" })).not.toBeInTheDocument());
   });
 });
