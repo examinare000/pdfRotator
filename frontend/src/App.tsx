@@ -8,6 +8,10 @@ import { detectOrientationForPage, type OrientationSuggestion } from "./lib/ocr"
 import { clampPageNumber } from "./lib/rotation";
 import { computeFitToWidthZoom } from "./lib/fit";
 import { fetchHealth, type HealthInfo } from "./lib/health";
+import { Header } from "./components/Header";
+import { Footer } from "./components/Footer";
+import { ShortcutsPanel } from "./components/ShortcutsPanel";
+import { UploadPanel } from "./components/UploadPanel";
 import "./App.css";
 
 const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
@@ -374,35 +378,11 @@ function App() {
       <div className="glow glow--one" />
       <div className="glow glow--two" />
 
-      <header className="app__header">
-        <div className="brand">
-          <div className="brand__eyebrow">
-            <span className="dot" />
-            <span>Precision PDF Lab</span>
-          </div>
-          <h1>PDFビューワ & 回転スタジオ</h1>
-          <p className="sub">
-            直感的なUIとショートカットでページを回転。OCRで向きを推定し、保存までノンストップ。
-          </p>
-          <div className="badges">
-            <span className="pill pill--ghost">矢印キー操作</span>
-            <span className="pill pill--ghost">OCR向き推定</span>
-            <span className="pill pill--ghost">ローカル保存</span>
-          </div>
-        </div>
-        <div className="header-actions">
-          <button type="button" onClick={() => setHelpOpen(true)} aria-label="ヘルプを開く">
-            ヘルプ
-          </button>
-          <div className="file-chip">
-            <span className="chip-label">選択中</span>
-            <span className="chip-value">{fileName || "未選択"}</span>
-          </div>
-          <button className="reset-btn" onClick={handleReset}>
-            状態をリセット
-          </button>
-        </div>
-      </header>
+      <Header
+        fileName={fileName}
+        onReset={handleReset}
+        onHelpOpen={() => setHelpOpen(true)}
+      />
 
       <div className="workspace">
         <div className="workspace__main">
@@ -443,30 +423,16 @@ function App() {
         </div>
 
         <div className="workspace__side">
-          <section className="panel upload">
-            <div
-              className={`upload__area ${dragging ? "upload__area--dragging" : ""}`}
-              onDragEnter={handleDragEnter}
-              onDragOver={(event) => event.preventDefault()}
-              onDragLeave={handleDragLeave}
-              onDrop={handleDrop}
-              aria-label="PDFをドラッグ&ドロップ"
-            >
-              <div>
-                <p className="label">PDFアップロード</p>
-                <p className="hint">50MB以内のPDF。ドラッグ&ドロップまたは選択で読み込みます。</p>
-              </div>
-              <div className="upload__controls">
-                <label className="upload__btn">
-                  <input ref={fileInputRef} type="file" accept="application/pdf" onChange={handleFileInput} />
-                  ファイルを選択
-                </label>
-                <button type="button" onClick={handleReselectPdf} disabled={state.status === "loading"}>
-                  元PDFを再選択
-                </button>
-              </div>
-            </div>
-          </section>
+          <UploadPanel
+            dragging={dragging}
+            onDragEnter={handleDragEnter}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+            fileInputRef={fileInputRef}
+            onFileChange={handleFileInput}
+            onReselect={handleReselectPdf}
+            disabled={state.status === "loading"}
+          />
 
           <section className="panel controls">
             <div className="controls__group">
@@ -605,36 +571,11 @@ function App() {
             </div>
           </section>
 
-          <section className="panel shortcuts">
-            <p className="label">ショートカット</p>
-            <div className="shortcut-grid">
-              <div className="shortcut-card">
-                <span className="kbd">→</span>
-                <span>+90° 回転して次ページ</span>
-              </div>
-              <div className="shortcut-card">
-                <span className="kbd">←</span>
-                <span>-90° 回転して次ページ</span>
-              </div>
-              <div className="shortcut-card">
-                <span className="kbd">↓ / ↑</span>
-                <span>ページ移動</span>
-              </div>
-              <div className="shortcut-card">
-                <span className="kbd">Ctrl/Cmd + S</span>
-                <span>回転を適用して保存</span>
-              </div>
-            </div>
-          </section>
+          <ShortcutsPanel />
         </div>
       </div>
 
-      <footer className="app__footer">
-        <span className="footer-item">PDF Rotator</span>
-        <span className="footer-item">{versionText}</span>
-        <span className="footer-item">→/←: 回転+次ページ</span>
-        <span className="footer-item">Ctrl/Cmd+S: 保存</span>
-      </footer>
+      <Footer version={versionText} />
 
       {toastText && (
         <div className="toast" role="status" aria-label="通知">
