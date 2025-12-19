@@ -1,12 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent, type PointerEvent } from "react";
 import { createPdfJsDistLoader } from "./lib/pdfjs";
 import workerSrc from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { useViewerState } from "./hooks/useViewerState";
 import { renderPageToCanvas } from "./lib/pdf";
 import { savePdfWithRotation } from "./lib/pdf-save";
 import { detectOrientationForPage, type OrientationSuggestion } from "./lib/ocr";
-import { applyRotationChange, clampPageNumber } from "./lib/rotation";
-import { computeFitToWidthZoom } from "./lib/fit";
+import { applyRotationChange } from "./lib/rotation";
 import { fetchHealth, type HealthInfo } from "./lib/health";
 import { Header } from "./components/Header";
 import { Footer } from "./components/Footer";
@@ -18,6 +17,7 @@ const MAX_FILE_SIZE = 300 * 1024 * 1024; // 300MB
 const DEFAULT_OCR_THRESHOLD = 0.6;
 
 type RenderState = "idle" | "rendering" | "error";
+type SelectionMode = "add" | "remove";
 
 const clampThreshold = (value: number): number => {
   if (Number.isNaN(value)) return 0;
@@ -60,18 +60,16 @@ function App() {
     state,
     loadFromArrayBuffer,
     setPage,
-    nextPage,
-    prevPage,
-    rotateCurrentPage,
     rotatePage,
-    setZoom,
     reset,
   } = useViewerState({ loader: pdfLoader });
 
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const canvasContainerRef = useRef<HTMLDivElement | null>(null);
+  const thumbCanvasRef = useRef(new Map<number, HTMLCanvasElement | null>());
+  const thumbMetaRef = useRef(new Map<number, { rotation: number }>());
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const dragDepthRef = useRef(0);
+  const selectingRef = useRef(false);
+  const selectionModeRef = useRef<SelectionMode>("add");
   const [fileName, setFileName] = useState<string>("");
   const [originalBuffer, setOriginalBuffer] = useState<ArrayBuffer | null>(null);
   const [renderState, setRenderState] = useState<RenderState>("idle");
@@ -83,12 +81,49 @@ function App() {
   const [ocrLoading, setOcrLoading] = useState(false);
   const [ocrProgress, setOcrProgress] = useState<{ current: number; total: number; page: number } | null>(null);
   const [ocrThreshold, setOcrThreshold] = useState(DEFAULT_OCR_THRESHOLD);
-  const [pageInput, setPageInput] = useState<string>("1");
   const [dragging, setDragging] = useState(false);
-  const [fitToWidth, setFitToWidth] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [health, setHealth] = useState<HealthInfo | null>(null);
+  const [selectedPages, setSelectedPages] = useState<number[]>([]);
+  const [previewPage, setPreviewPage] = useState<number | null>(null);
   const ocrAbortRef = useRef<AbortController | null>(null);
+  const previewCanvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  const renderThumbnail = useCallback(
+    async (pageNumber: number, canvas: HTMLCanvasElement) => {
+      if (!state.pdfDoc || state.status !== "ready") return;
+      const rotation = state.rotationMap[pageNumber] ?? 0;
+      const meta = thumbMetaRef.current.get(pageNumber);
+      if (meta?.rotation === rotation && canvas.width > 0) {
+        return;
+      }
+      const page = await state.pdfDoc.getPage(pageNumber);
+      await renderPageToCanvas(page, canvas, {
+        scale: 1,
+        rotation,
+        maxWidth: 180,
+        maxHeight: 240,
+      });
+      thumbMetaRef.current.set(pageNumber, { rotation });
+    },
+    [state.pdfDoc, state.rotationMap, state.status]
+  );
+
+  const setThumbCanvas = useCallback(
+    (pageNumber: number) => (node: HTMLCanvasElement | null) => {
+      thumbCanvasRef.current.set(pageNumber, node);
+      if (!node) {
+        thumbMetaRef.current.delete(pageNumber);
+        return;
+      }
+      void renderThumbnail(pageNumber, node).catch((error) => {
+        setRenderState("error");
+        const text = error instanceof Error ? error.message : "サムネイルの描画に失敗しました";
+        setMessage(text);
+      });
+    },
+    [renderThumbnail]
+  );
 
   const handleFile = async (file: File) => {
     if (!isPdfFile(file)) {
@@ -107,6 +142,8 @@ function App() {
       const buffer = await readFileAsArrayBuffer(file);
       await loadFromArrayBuffer(buffer);
       setOriginalBuffer(buffer);
+      setSelectedPages([]);
+      setPreviewPage(null);
     } catch (error) {
       const text = error instanceof Error ? error.message : "PDFの読み込みに失敗しました";
       setMessage(text);
@@ -147,35 +184,26 @@ function App() {
   };
 
   useEffect(() => {
-    if (state.numPages > 0) {
-      setPageInput(String(state.currentPage));
-    } else {
-      setPageInput("1");
-    }
-  }, [state.currentPage, state.numPages]);
-
-  useEffect(() => {
-    const pdfDoc = state.pdfDoc;
-    if (!pdfDoc || !canvasRef.current || state.status !== "ready") {
+    if (!state.pdfDoc || state.status !== "ready") {
       return;
     }
     let cancelled = false;
     const run = async () => {
       setRenderState("rendering");
       try {
-        const page = await pdfDoc.getPage(state.currentPage);
-        const rotation = state.rotationMap[state.currentPage] ?? 0;
-        await renderPageToCanvas(page, canvasRef.current!, {
-          scale: state.zoom,
-          rotation,
-        });
+        for (let pageNumber = 1; pageNumber <= state.numPages; pageNumber += 1) {
+          if (cancelled) return;
+          const canvas = thumbCanvasRef.current.get(pageNumber);
+          if (!canvas) continue;
+          await renderThumbnail(pageNumber, canvas);
+        }
         if (!cancelled) {
           setRenderState("idle");
         }
       } catch (error) {
         if (!cancelled) {
           setRenderState("error");
-          const text = error instanceof Error ? error.message : "ページの描画に失敗しました";
+          const text = error instanceof Error ? error.message : "サムネイルの描画に失敗しました";
           setMessage(text);
         }
       }
@@ -184,7 +212,7 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [state.pdfDoc, state.currentPage, state.rotationMap, state.zoom, state.status]);
+  }, [renderThumbnail, state.pdfDoc, state.numPages, state.rotationMap, state.status]);
 
   useEffect(() => {
     let cancelled = false;
@@ -201,32 +229,6 @@ function App() {
       cancelled = true;
     };
   }, []);
-
-  const applyFitToWidth = useCallback(() => {
-    if (!fitToWidth) return;
-    if (state.status !== "ready") return;
-    const container = canvasContainerRef.current;
-    const canvas = canvasRef.current;
-    if (!container || !canvas) return;
-
-    const nextZoom = computeFitToWidthZoom({
-      currentZoom: state.zoom,
-      canvasWidth: canvas.width,
-      containerWidth: container.clientWidth,
-      padding: 24,
-    });
-    if (!nextZoom) return;
-    if (Math.abs(nextZoom - state.zoom) < 0.02) return;
-    setZoom(nextZoom);
-  }, [fitToWidth, setZoom, state.status, state.zoom]);
-
-  useEffect(() => {
-    if (!fitToWidth) return;
-    applyFitToWidth();
-    const handler = () => applyFitToWidth();
-    window.addEventListener("resize", handler);
-    return () => window.removeEventListener("resize", handler);
-  }, [fitToWidth, applyFitToWidth, state.currentPage, state.rotationMap, renderState]);
 
   const canSave = originalBuffer !== null && originalBuffer.byteLength > 0 && state.status === "ready";
 
@@ -254,6 +256,103 @@ function App() {
   }, [state.status]);
 
   useEffect(() => {
+    if (!state.pdfDoc) {
+      setSelectedPages([]);
+      setPreviewPage(null);
+      return;
+    }
+    setSelectedPages([]);
+    thumbMetaRef.current.clear();
+  }, [state.pdfDoc]);
+
+  useEffect(() => {
+    const stopSelecting = () => {
+      selectingRef.current = false;
+    };
+    window.addEventListener("pointerup", stopSelecting);
+    window.addEventListener("pointercancel", stopSelecting);
+    return () => {
+      window.removeEventListener("pointerup", stopSelecting);
+      window.removeEventListener("pointercancel", stopSelecting);
+    };
+  }, []);
+
+  const applySelection = useCallback((pageNumber: number, mode: SelectionMode) => {
+    setSelectedPages((prev) => {
+      const next = new Set(prev);
+      if (mode === "add") {
+        next.add(pageNumber);
+      } else {
+        next.delete(pageNumber);
+      }
+      return Array.from(next).sort((a, b) => a - b);
+    });
+  }, []);
+
+  const handleThumbPointerDown = useCallback(
+    (pageNumber: number, isSelected: boolean) => (event: PointerEvent<HTMLButtonElement>) => {
+      if (state.status !== "ready") return;
+      if (event.button !== 0) return;
+      event.preventDefault();
+      selectingRef.current = true;
+      selectionModeRef.current = isSelected ? "remove" : "add";
+      applySelection(pageNumber, selectionModeRef.current);
+      setPage(pageNumber);
+    },
+    [applySelection, setPage, state.status]
+  );
+
+  const handleThumbPointerEnter = useCallback(
+    (pageNumber: number) => (event: PointerEvent<HTMLButtonElement>) => {
+      if (!selectingRef.current) return;
+      if (event.buttons !== 1) return;
+      applySelection(pageNumber, selectionModeRef.current);
+    },
+    [applySelection]
+  );
+
+  const handleThumbDoubleClick = useCallback(
+    (pageNumber: number) => () => {
+      if (state.status !== "ready") return;
+      setPreviewPage(pageNumber);
+    },
+    [state.status]
+  );
+
+  const rotateSelectedPages = useCallback(
+    (delta: number) => {
+      if (selectedPages.length === 0) return;
+      selectedPages.forEach((pageNumber) => rotatePage(pageNumber, delta));
+    },
+    [rotatePage, selectedPages]
+  );
+
+  useEffect(() => {
+    const run = async () => {
+      if (previewPage === null) return;
+      if (!state.pdfDoc || state.status !== "ready") return;
+      if (!previewCanvasRef.current) return;
+      setRenderState("rendering");
+      try {
+        const page = await state.pdfDoc.getPage(previewPage);
+        const rotation = state.rotationMap[previewPage] ?? 0;
+        await renderPageToCanvas(page, previewCanvasRef.current, {
+          scale: 1.6,
+          rotation,
+          maxWidth: 900,
+          maxHeight: 1200,
+        });
+      } catch (error) {
+        const text = error instanceof Error ? error.message : "プレビューの描画に失敗しました";
+        setMessage(text);
+      } finally {
+        setRenderState("idle");
+      }
+    };
+    void run();
+  }, [previewPage, state.pdfDoc, state.rotationMap, state.status]);
+
+  useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
       if (target?.tagName === "INPUT" || target?.tagName === "TEXTAREA" || target?.isContentEditable) {
@@ -262,20 +361,30 @@ function App() {
       if (state.status !== "ready") return;
       switch (e.key) {
         case "ArrowRight":
-          e.preventDefault();
-          rotateCurrentPage(90);
+          if (e.ctrlKey || e.metaKey) {
+            e.preventDefault();
+            rotateSelectedPages(90);
+          }
           break;
         case "ArrowLeft":
-          e.preventDefault();
-          rotateCurrentPage(-90);
-          break;
-        case "ArrowDown":
-          e.preventDefault();
-          nextPage();
+          if (e.ctrlKey || e.metaKey) {
+            e.preventDefault();
+            rotateSelectedPages(-90);
+          }
           break;
         case "ArrowUp":
-          e.preventDefault();
-          prevPage();
+        case "ArrowDown":
+          if (e.ctrlKey || e.metaKey) {
+            e.preventDefault();
+            rotateSelectedPages(180);
+          }
+          break;
+        case "Escape":
+          if (previewPage !== null) {
+            setPreviewPage(null);
+          } else {
+            setSelectedPages([]);
+          }
           break;
         case "s":
         case "S":
@@ -292,7 +401,7 @@ function App() {
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [state.status, rotateCurrentPage, nextPage, prevPage, originalBuffer, state.rotationMap, fileName, handleSave]);
+  }, [state.status, previewPage, rotateSelectedPages, originalBuffer, fileName, handleSave]);
 
   const handleReset = () => {
     ocrAbortRef.current?.abort();
@@ -305,25 +414,13 @@ function App() {
     setOcrLoading(false);
     setOcrProgress(null);
     setRenderState("idle");
-    setFitToWidth(false);
+    setSelectedPages([]);
+    setPreviewPage(null);
+    thumbMetaRef.current.clear();
   };
 
   const handleReselectPdf = () => {
     fileInputRef.current?.click();
-  };
-
-  const handlePageJump = () => {
-    if (state.status !== "ready") {
-      return;
-    }
-    const raw = Number(pageInput);
-    if (!Number.isFinite(raw)) {
-      setMessage("ページ番号が不正です");
-      return;
-    }
-    const nextPageNumber = clampPageNumber(raw, state.numPages);
-    setPage(nextPageNumber);
-    setMessage(null);
   };
 
   useEffect(() => {
@@ -418,6 +515,8 @@ function App() {
 
   const toastText = ocrError ?? message;
   const versionText = health?.version ? `v${health.version}` : "v--";
+  const selectedSet = useMemo(() => new Set(selectedPages), [selectedPages]);
+  const selectionLabel = selectedPages.length > 0 ? `${selectedPages.length}ページ選択中` : "未選択";
 
   return (
     <div className="app">
@@ -436,21 +535,48 @@ function App() {
             <div className="viewer__top">
               <div className="status">
                 <span className={`pill pill--${state.status}`}>状態: {state.status}</span>
-                {renderState === "rendering" && <span className="pill pill--render">描画中...</span>}
+                {renderState === "rendering" && <span className="pill pill--render">サムネイル生成中...</span>}
               </div>
               <div className="viewer__meta">
-                <span className="meta-badge">ページ {state.currentPage} / {state.numPages || "--"}</span>
-                <span className="meta-badge">ズーム {state.zoom.toFixed(2)}x</span>
+                <span className="meta-badge">総ページ {state.numPages || "--"}</span>
+                <span className="meta-badge">選択 {selectionLabel}</span>
               </div>
             </div>
-            <div className="viewer__canvas" ref={canvasContainerRef}>
+            <p className="hint">クリック/ドラッグで複数選択。Ctrl/Cmd + ←/→/↑/↓ で回転。ダブルクリックで拡大。</p>
+            <div className="viewer__grid">
               {!state.pdfDoc && <div className="placeholder">PDFを読み込むとここに表示されます</div>}
-              {renderState === "rendering" && state.pdfDoc && (
-                <div className="viewer__overlay" role="status" aria-label="描画中">
-                  描画中...
+              {state.pdfDoc && (
+                <div className="thumb-grid" role="list" aria-label="ページ一覧">
+                  {Array.from({ length: state.numPages }, (_, index) => {
+                    const pageNumber = index + 1;
+                    const isSelected = selectedSet.has(pageNumber);
+                    const rotation = state.rotationMap[pageNumber] ?? 0;
+                    return (
+                      <button
+                        type="button"
+                        key={pageNumber}
+                        className={`thumb-card${isSelected ? " is-selected" : ""}`}
+                        aria-pressed={isSelected}
+                        aria-label={`ページ ${pageNumber}`}
+                        disabled={state.status !== "ready"}
+                        onPointerDown={handleThumbPointerDown(pageNumber, isSelected)}
+                        onPointerEnter={handleThumbPointerEnter(pageNumber)}
+                        onDoubleClick={handleThumbDoubleClick(pageNumber)}
+                      >
+                        <div className="thumb-canvas">
+                          <canvas
+                            ref={setThumbCanvas(pageNumber)}
+                          />
+                        </div>
+                <div className="thumb-meta">
+                  <span>p.{pageNumber}</span>
+                  {rotation !== 0 && <span className="pill pill--ghost">{rotation}°</span>}
+                </div>
+                      </button>
+                    );
+                  })}
                 </div>
               )}
-              <canvas ref={canvasRef} />
             </div>
             <div className="viewer__actions">
               <button
@@ -459,6 +585,13 @@ function App() {
                 disabled={!canSave}
               >
                 適用して保存 (Ctrl+S)
+              </button>
+              <button
+                type="button"
+                onClick={() => setSelectedPages([])}
+                disabled={selectedPages.length === 0 || state.status !== "ready"}
+              >
+                選択解除
               </button>
               <div className="footnote">
                 {state.errorMessage && <span className="error-text">{state.errorMessage}</span>}
@@ -481,45 +614,6 @@ function App() {
           />
 
           <section className="panel controls">
-            <div className="controls__group">
-              <p className="label">ページ</p>
-              <div className="button-row">
-                <button onClick={prevPage} disabled={state.currentPage <= 1 || state.status !== "ready"}>
-                  前へ
-                </button>
-                <span className="page-indicator">
-                  {state.currentPage} / {state.numPages || "--"}
-                </span>
-                <button
-                  onClick={nextPage}
-                  disabled={state.currentPage >= state.numPages || state.status !== "ready"}
-                >
-                  次へ
-                </button>
-              </div>
-              <div className="button-row">
-                <input
-                  className="number-input"
-                  type="number"
-                  inputMode="numeric"
-                  min={1}
-                  max={state.numPages || 1}
-                  value={pageInput}
-                  onChange={(event) => setPageInput(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter") {
-                      event.preventDefault();
-                      handlePageJump();
-                    }
-                  }}
-                  disabled={state.status !== "ready"}
-                  aria-label="ページ番号入力"
-                />
-                <button onClick={handlePageJump} disabled={state.status !== "ready"}>
-                  移動
-                </button>
-              </div>
-            </div>
             <div className="controls__group">
               <p className="label">OCR向き推定</p>
               <div className="threshold-row">
@@ -575,37 +669,11 @@ function App() {
             <div className="controls__group">
               <p className="label">回転</p>
               <div className="button-row">
-                <button onClick={() => rotateCurrentPage(-90)} disabled={state.status !== "ready"}>
-                  -90°
+                <button onClick={() => rotateSelectedPages(-90)} disabled={state.status !== "ready" || selectedPages.length === 0}>
+                  選択を-90°
                 </button>
-                <button onClick={() => rotateCurrentPage(90)} disabled={state.status !== "ready"}>
-                  +90°
-                </button>
-              </div>
-            </div>
-            <div className="controls__group">
-              <p className="label">ズーム</p>
-              <div className="button-row">
-                <button onClick={() => setZoom(state.zoom - 0.25)} disabled={state.status === "idle" || fitToWidth}>
-                  -
-                </button>
-                <span className="page-indicator">{state.zoom.toFixed(2)}x</span>
-                <button onClick={() => setZoom(state.zoom + 0.25)} disabled={state.status === "idle" || fitToWidth}>
-                  +
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    const next = !fitToWidth;
-                    setFitToWidth(next);
-                    if (next) {
-                      applyFitToWidth();
-                    }
-                  }}
-                  disabled={state.status !== "ready"}
-                  aria-pressed={fitToWidth}
-                >
-                  幅に合わせる
+                <button onClick={() => rotateSelectedPages(90)} disabled={state.status !== "ready" || selectedPages.length === 0}>
+                  選択を+90°
                 </button>
               </div>
             </div>
@@ -642,11 +710,36 @@ function App() {
               </p>
               <p className="label">ショートカット</p>
               <ul className="help-list">
-                <li>→: +90° 回転</li>
-                <li>←: -90° 回転</li>
-                <li>↓ / ↑: ページ移動</li>
+                <li>Ctrl/Cmd + →: +90° 回転</li>
+                <li>Ctrl/Cmd + ←: -90° 回転</li>
+                <li>Ctrl/Cmd + ↑/↓: 180° 回転</li>
                 <li>Ctrl/Cmd + S: 回転を適用して保存</li>
+                <li>Esc: 選択解除</li>
+                <li>ダブルクリック: 拡大表示</li>
               </ul>
+            </div>
+          </div>
+        </div>
+      )}
+      {previewPage !== null && (
+        <div className="modal" role="dialog" aria-modal="true" aria-label="プレビュー">
+          <div className="modal__backdrop" onClick={() => setPreviewPage(null)} />
+          <div className="modal__card modal__card--preview">
+            <div className="modal__header">
+              <h2>プレビュー p.{previewPage}</h2>
+              <button type="button" onClick={() => setPreviewPage(null)} aria-label="閉じる">
+                ×
+              </button>
+            </div>
+            <div className="modal__body preview-body">
+              {renderState === "rendering" && (
+                <span className="pill pill--render" role="status" aria-label="描画中">
+                  描画中...
+                </span>
+              )}
+              <div className="preview-canvas">
+                <canvas ref={previewCanvasRef} />
+              </div>
             </div>
           </div>
         </div>

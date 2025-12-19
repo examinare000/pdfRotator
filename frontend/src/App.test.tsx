@@ -65,8 +65,8 @@ const createMockPage = (): PdfPageProxy => ({
   render: vi.fn(() => ({ promise: Promise.resolve() })),
 });
 
-const createMockPdfDoc = (): PdfDocumentProxy => ({
-  numPages: 1,
+const createMockPdfDoc = (numPages = 1): PdfDocumentProxy => ({
+  numPages,
   getPage: vi.fn(async () => createMockPage()),
 });
 
@@ -143,25 +143,6 @@ describe("App", () => {
     expect(screen.getByText("sample.pdf")).toBeInTheDocument();
   });
 
-  it("ページ番号入力で範囲外を指定しても総ページ数にクランプして移動する", async () => {
-    const setPage = vi.fn();
-    mockUseViewerState.mockReturnValue(
-      makeViewerHook({
-        state: makeState({ status: "ready", numPages: 5, currentPage: 1, pdfDoc: createMockPdfDoc() }),
-        setPage,
-      })
-    );
-
-    render(<App />);
-    const user = userEvent.setup();
-
-    await user.clear(screen.getByLabelText("ページ番号入力"));
-    await user.type(screen.getByLabelText("ページ番号入力"), "999");
-    await user.click(screen.getByRole("button", { name: "移動" }));
-
-    expect(setPage).toHaveBeenCalledWith(5);
-  });
-
   it("OCRしきい値を指定して向き推定を実行できる", async () => {
     mockDetectOrientationForPage.mockResolvedValue({
       page: 1,
@@ -234,21 +215,56 @@ describe("App", () => {
     expect(viewerHook.rotatePage).toHaveBeenCalledWith(3, 90);
   });
 
-  it("矢印キー左右でページを回転し、ページ移動はしない", async () => {
+  it("Ctrl+左右で選択ページを回転する", async () => {
     const viewerHook = makeViewerHook({
-      state: makeState({ status: "ready", numPages: 3, currentPage: 2, pdfDoc: createMockPdfDoc() }),
+      state: makeState({ status: "ready", numPages: 3, currentPage: 1, pdfDoc: createMockPdfDoc(3) }),
     });
     mockUseViewerState.mockReturnValue(viewerHook);
 
     render(<App />);
 
-    fireEvent.keyDown(window, { key: "ArrowRight" });
-    expect(viewerHook.rotateCurrentPage).toHaveBeenCalledWith(90);
-    expect(viewerHook.nextPage).not.toHaveBeenCalled();
+    fireEvent.pointerDown(screen.getByRole("button", { name: "ページ 1" }), { button: 0 });
+    fireEvent.pointerDown(screen.getByRole("button", { name: "ページ 2" }), { button: 0 });
 
-    fireEvent.keyDown(window, { key: "ArrowLeft" });
-    expect(viewerHook.rotateCurrentPage).toHaveBeenCalledWith(-90);
-    expect(viewerHook.nextPage).not.toHaveBeenCalled();
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "ページ 1" })).toHaveAttribute("aria-pressed", "true");
+      expect(screen.getByRole("button", { name: "ページ 2" })).toHaveAttribute("aria-pressed", "true");
+    });
+
+    fireEvent.keyDown(window, { key: "ArrowRight", ctrlKey: true });
+    expect(viewerHook.rotatePage).toHaveBeenCalledWith(1, 90);
+    expect(viewerHook.rotatePage).toHaveBeenCalledWith(2, 90);
+
+    fireEvent.keyDown(window, { key: "ArrowLeft", ctrlKey: true });
+    expect(viewerHook.rotatePage).toHaveBeenCalledWith(1, -90);
+    expect(viewerHook.rotatePage).toHaveBeenCalledWith(2, -90);
+  });
+
+  it("Ctrl+上下で選択ページを180度回転し、Escで選択解除できる", async () => {
+    const viewerHook = makeViewerHook({
+      state: makeState({ status: "ready", numPages: 2, currentPage: 1, pdfDoc: createMockPdfDoc(2) }),
+    });
+    mockUseViewerState.mockReturnValue(viewerHook);
+
+    render(<App />);
+
+    fireEvent.pointerDown(screen.getByRole("button", { name: "ページ 1" }), { button: 0 });
+    fireEvent.pointerDown(screen.getByRole("button", { name: "ページ 2" }), { button: 0 });
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "ページ 1" })).toHaveAttribute("aria-pressed", "true");
+      expect(screen.getByRole("button", { name: "ページ 2" })).toHaveAttribute("aria-pressed", "true");
+    });
+
+    fireEvent.keyDown(window, { key: "ArrowDown", ctrlKey: true });
+    expect(viewerHook.rotatePage).toHaveBeenCalledWith(1, 180);
+    expect(viewerHook.rotatePage).toHaveBeenCalledWith(2, 180);
+
+    fireEvent.keyDown(window, { key: "Escape" });
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "ページ 1" })).toHaveAttribute("aria-pressed", "false");
+      expect(screen.getByRole("button", { name: "ページ 2" })).toHaveAttribute("aria-pressed", "false");
+    });
   });
 
   it("ヘルプモーダルを開閉できる", async () => {
