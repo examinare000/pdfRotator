@@ -54,12 +54,17 @@
 - 運用: 環境変数 `OCR_ENABLED`, `OCR_TIMEOUT_MS`, `CORS_ORIGIN`, `STATIC_DIR` の管理。配布パッケージでは `server/public` に静的ビルドを同梱し `start.cmd` で起動。
 
 ## 2025-12-15 追記（フロント統合の現況）
-- ビューワ: `pdfjs-dist` と `useViewerState` でPDFを表示・回転・ページ移動・ズームを実装済み。回転マップは90度単位。
+- ビューワ: `pdfjs-dist` と `useViewerState` でサムネイル一覧を表示し、選択ページの回転を管理。回転マップは90度単位。
 - 保存: `pdf-lib` で回転を適用し、Ctrl/Cmd+S ショートカットとボタンで `rotated.pdf` をダウンロード。
-- ショートカット: →(+90°して次ページ) / ←(-90°して次ページ) / ↓(次) / ↑(前) を実装。入力フォーカス時は無効化。
-- OCR連携予定: 本エンドポイントを呼び出す「向きレコメンド」ボタンを追加し、`rotation`/`confidence` を回転マップに反映するUIを次ステップで実装する。
+- ショートカット: Ctrl/Cmd+→/←/↑/↓ で選択ページ回転、Escで選択解除、ダブルクリックで拡大プレビュー。入力フォーカス時は無効化。
+- OCR連携: 本エンドポイントを呼び出す「向き推定」を追加し、`rotation`/`confidence` を回転マップに自動反映する。
 
 ## 2025-12-16 追記（実装完了と挙動）
 - バックエンド: 50MB 上限に拡張し、Base64/ファイル双方に再利用するバリデーションを追加。`textSample` を返却し、Tesseract.detect が失敗した場合は4方向スイープでフォールバックする。
-- フロントエンド: `OrientationPanel` を実装し、PDFページを `renderPageToCanvas` 経由でPNG化して本エンドポイントへ送信。しきい値入力、信頼度表示、提案の適用ボタンを提供し、UIテストを追加。
+- フロントエンド: `OrientationPanel` を実装し、PDFページを `renderPageToCanvas` 経由でPNG化して本エンドポイントへ送信。しきい値入力、信頼度表示、推定結果の自動適用を提供し、UIテストを追加。
 - フロント実装は `pdf.worker.js` を `public/` に配置し、`resolveWorkerSrc` で `BASE_URL` に追従。Vitest + Testing Library のセットアップを追加。
+
+## 2025-12-19 追記（ページ番号スイープの導入）
+- バックエンド: ページ周辺の数字トークン（ページ番号）を使ったスイープ検出を優先し、0/90/180/270 の各回転で `recognize` を実行してスコア最大の回転を採用する。スコアが得られない場合は `Tesseract.detect` にフォールバック。
+- `textSample` は `OCR_TEXT_SAMPLE_ENABLED` と `OCR_TEXT_SAMPLE_TIMEOUT_MS` で制御し、タイムアウトした場合は省略する。
+- フロントエンド: OCR推定は現在選択ページを起点に順次実行し、自動で回転マップに反映する。
