@@ -14,7 +14,7 @@ import { ShortcutsPanel } from "./components/ShortcutsPanel";
 import { UploadPanel } from "./components/UploadPanel";
 import "./App.css";
 
-const MAX_FILE_SIZE = 200 * 1024 * 1024; // 200MB
+const MAX_FILE_SIZE = 300 * 1024 * 1024; // 300MB
 const DEFAULT_OCR_THRESHOLD = 0.6;
 
 type RenderState = "idle" | "rendering" | "error";
@@ -96,7 +96,7 @@ function App() {
       return;
     }
     if (file.size > MAX_FILE_SIZE) {
-      setMessage("ファイルサイズは200MB以内にしてください");
+      setMessage("ファイルサイズは300MB以内にしてください");
       return;
     }
     setMessage(null);
@@ -155,19 +155,17 @@ function App() {
   }, [state.currentPage, state.numPages]);
 
   useEffect(() => {
-    if (!state.pdfDoc || !canvasRef.current || state.status !== "ready") {
-      return;
-    }
-    if (typeof (state.pdfDoc as any)?.getPage !== "function") {
+    const pdfDoc = state.pdfDoc;
+    if (!pdfDoc || !canvasRef.current || state.status !== "ready") {
       return;
     }
     let cancelled = false;
     const run = async () => {
       setRenderState("rendering");
       try {
-        const page = await state.pdfDoc!.getPage(state.currentPage);
+        const page = await pdfDoc.getPage(state.currentPage);
         const rotation = state.rotationMap[state.currentPage] ?? 0;
-        await renderPageToCanvas(page as any, canvasRef.current!, {
+        await renderPageToCanvas(page, canvasRef.current!, {
           scale: state.zoom,
           rotation,
         });

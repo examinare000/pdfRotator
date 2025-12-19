@@ -100,7 +100,7 @@ pwsh scripts/package-win.ps1 -NodeExePath "C:\\Program Files\\nodejs\\node.exe"
 - `server`: `npm test` (Vitest + Supertest)
 
 ## 使い方のヒント
-- 200MB 以内の PDF を `ファイルを選択` で読み込み。状態はリセットボタンで初期化。
+- 300MB 以内の PDF を `ファイルを選択` で読み込み。状態はリセットボタンで初期化。
 - 回転はボタンまたはキーボード（→/← で回転）。ズームは 0.25〜3.0x にクランプ。
 - 「向き推定」で現在ページ以降を OCR して信頼度と推定角度を表示し、提案を自動で回転に反映。
 - 「適用して保存」または Ctrl/Cmd+S で回転を焼き込んだ PDF をダウンロード。

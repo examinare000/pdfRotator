@@ -32,7 +32,7 @@ export const UploadPanel: FC<UploadPanelProps> = ({
     >
       <div>
         <p className="label">PDFアップロード</p>
-        <p className="hint">200MB以内のPDF。ドラッグ&ドロップまたは選択で読み込みます。</p>
+        <p className="hint">300MB以内のPDF。ドラッグ&ドロップまたは選択で読み込みます。</p>
       </div>
       <div className="upload__controls">
         <label className="upload__btn">

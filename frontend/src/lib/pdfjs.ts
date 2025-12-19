@@ -1,5 +1,5 @@
 import { GlobalWorkerOptions, getDocument } from "pdfjs-dist";
-import { createPdfLoader, type PdfJsLike, type PdfLoader } from "./pdf";
+import { createPdfLoader, type PdfDocumentProxy, type PdfJsLike, type PdfLoader } from "./pdf";
 
 export type PdfJsDistOptions = {
   workerSrc?: string;
@@ -7,7 +7,8 @@ export type PdfJsDistOptions = {
 
 export const createPdfJsDistLoader = (options: PdfJsDistOptions = {}): PdfLoader => {
   const pdfjsLike: PdfJsLike = {
-    getDocument: ({ data }) => getDocument({ data }) as unknown as { promise: Promise<any> },
+    getDocument: ({ data }) =>
+      getDocument({ data }) as unknown as { promise: Promise<PdfDocumentProxy> },
     GlobalWorkerOptions: GlobalWorkerOptions as unknown as { workerSrc?: string },
   };
   const loader = createPdfLoader(pdfjsLike);

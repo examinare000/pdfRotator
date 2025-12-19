@@ -3,6 +3,7 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import App from "./App";
+import type { PdfDocumentProxy, PdfPageProxy } from "./lib/pdf";
 
 const mockDetectOrientationForPage = vi.fn();
 const mockUseViewerState = vi.fn();
@@ -28,6 +29,14 @@ vi.mock("./lib/pdfjs", () => {
   };
 });
 
+vi.mock("./lib/pdf", async () => {
+  const actual = await vi.importActual<typeof import("./lib/pdf")>("./lib/pdf");
+  return {
+    ...actual,
+    renderPageToCanvas: vi.fn(async () => ({ width: 1, height: 1 })),
+  };
+});
+
 type MockViewerState = {
   status: "idle" | "loading" | "ready" | "error";
   pdfDoc: unknown;
@@ -50,6 +59,16 @@ const makeState = (override?: Partial<MockViewerState>): MockViewerState => {
   };
   return { ...base, ...override };
 };
+
+const createMockPage = (): PdfPageProxy => ({
+  getViewport: vi.fn(() => ({ width: 1, height: 1 })),
+  render: vi.fn(() => ({ promise: Promise.resolve() })),
+});
+
+const createMockPdfDoc = (): PdfDocumentProxy => ({
+  numPages: 1,
+  getPage: vi.fn(async () => createMockPage()),
+});
 
 const makeViewerHook = (override?: {
   state?: MockViewerState;
@@ -92,17 +111,17 @@ describe("App", () => {
     expect(messages.length).toBeGreaterThan(0);
   });
 
-  it("DnDで200MB超のPDFをドロップするとエラーメッセージを表示する", async () => {
+  it("DnDで300MB超のPDFをドロップするとエラーメッセージを表示する", async () => {
     mockUseViewerState.mockReturnValue(makeViewerHook());
     render(<App />);
 
     const dropzone = screen.getByLabelText("PDFをドラッグ&ドロップ");
     const file = new File(["x"], "big.pdf", { type: "application/pdf" });
-    Object.defineProperty(file, "size", { value: 200 * 1024 * 1024 + 1 });
+    Object.defineProperty(file, "size", { value: 300 * 1024 * 1024 + 1 });
 
     fireEvent.drop(dropzone, { dataTransfer: { files: [file] } });
 
-    const messages = await screen.findAllByText("ファイルサイズは200MB以内にしてください");
+    const messages = await screen.findAllByText("ファイルサイズは300MB以内にしてください");
     expect(messages.length).toBeGreaterThan(0);
   });
 
@@ -128,7 +147,7 @@ describe("App", () => {
     const setPage = vi.fn();
     mockUseViewerState.mockReturnValue(
       makeViewerHook({
-        state: makeState({ status: "ready", numPages: 5, currentPage: 1, pdfDoc: {} as any }),
+        state: makeState({ status: "ready", numPages: 5, currentPage: 1, pdfDoc: createMockPdfDoc() }),
         setPage,
       })
     );
@@ -155,7 +174,7 @@ describe("App", () => {
 
     mockUseViewerState.mockReturnValue(
       makeViewerHook({
-        state: makeState({ status: "ready", numPages: 1, currentPage: 1, pdfDoc: {} as any }),
+        state: makeState({ status: "ready", numPages: 1, currentPage: 1, pdfDoc: createMockPdfDoc() }),
       })
     );
 
@@ -195,7 +214,7 @@ describe("App", () => {
         status: "ready",
         numPages: 3,
         currentPage: 2,
-        pdfDoc: {} as any,
+        pdfDoc: createMockPdfDoc(),
         rotationMap: { 2: 90 },
       }),
     });
@@ -217,7 +236,7 @@ describe("App", () => {
 
   it("矢印キー左右でページを回転し、ページ移動はしない", async () => {
     const viewerHook = makeViewerHook({
-      state: makeState({ status: "ready", numPages: 3, currentPage: 2, pdfDoc: {} as any }),
+      state: makeState({ status: "ready", numPages: 3, currentPage: 2, pdfDoc: createMockPdfDoc() }),
     });
     mockUseViewerState.mockReturnValue(viewerHook);
 
