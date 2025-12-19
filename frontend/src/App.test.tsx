@@ -82,7 +82,7 @@ describe("App", () => {
     mockUseViewerState.mockReturnValue(makeViewerHook());
     render(<App />);
 
-    const dropzone = screen.getByLabelText("PDFをドラッグ&ドロップ");
+    const dropzone = screen.getByLabelText("Drop PDF here");
     const file = new File(["hello"], "note.txt", { type: "text/plain" });
 
     fireEvent.drop(dropzone, { dataTransfer: { files: [file] } });
@@ -94,7 +94,7 @@ describe("App", () => {
     mockUseViewerState.mockReturnValue(makeViewerHook());
     render(<App />);
 
-    const dropzone = screen.getByLabelText("PDFをドラッグ&ドロップ");
+    const dropzone = screen.getByLabelText("Drop PDF here");
     const file = new File(["x"], "big.pdf", { type: "application/pdf" });
     Object.defineProperty(file, "size", { value: 50 * 1024 * 1024 + 1 });
 
@@ -112,7 +112,7 @@ describe("App", () => {
     );
     render(<App />);
 
-    const dropzone = screen.getByLabelText("PDFをドラッグ&ドロップ");
+    const dropzone = screen.getByLabelText("Drop PDF here");
     const file = new File([new Uint8Array([1, 2, 3])], "sample.pdf", { type: "application/pdf" });
 
     fireEvent.drop(dropzone, { dataTransfer: { files: [file] } });
@@ -133,9 +133,9 @@ describe("App", () => {
     render(<App />);
     const user = userEvent.setup();
 
-    await user.clear(screen.getByLabelText("ページ番号入力"));
-    await user.type(screen.getByLabelText("ページ番号入力"), "999");
-    await user.click(screen.getByRole("button", { name: "移動" }));
+    await user.clear(screen.getByLabelText("Page number"));
+    await user.type(screen.getByLabelText("Page number"), "999");
+    await user.click(screen.getByRole("button", { name: "Go" }));
 
     expect(setPage).toHaveBeenCalledWith(5);
   });
@@ -159,9 +159,9 @@ describe("App", () => {
     render(<App />);
     const user = userEvent.setup();
 
-    await user.clear(screen.getByLabelText("OCR信頼度しきい値"));
-    await user.type(screen.getByLabelText("OCR信頼度しきい値"), "0.8");
-    await user.click(screen.getByRole("button", { name: "向き推定" }));
+    await user.clear(screen.getByLabelText("OCR confidence threshold"));
+    await user.type(screen.getByLabelText("OCR confidence threshold"), "0.8");
+    await user.click(screen.getByRole("button", { name: "Detect" }));
 
     await waitFor(() => expect(mockDetectOrientationForPage).toHaveBeenCalledTimes(1));
     const [, , options] = mockDetectOrientationForPage.mock.calls[0];

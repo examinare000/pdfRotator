@@ -307,32 +307,29 @@ function App() {
 
   return (
     <div className="app">
-      <div className="glow glow--one" />
-      <div className="glow glow--two" />
-
       <header className="app__header">
         <div className="brand">
           <div className="brand__eyebrow">
             <span className="dot" />
-            <span>Precision PDF Lab</span>
+            <span>PDF Rotator</span>
           </div>
-          <h1>PDFビューワ & 回転スタジオ</h1>
+          <h1>Rotate with Precision</h1>
           <p className="sub">
-            直感的なUIとショートカットでページを回転。OCRで向きを推定し、保存までノンストップ。
+            ページ単位の回転操作、OCRによる自動向き検出、キーボードショートカット対応。
           </p>
           <div className="badges">
-            <span className="pill pill--ghost">矢印キー操作</span>
-            <span className="pill pill--ghost">OCR向き推定</span>
-            <span className="pill pill--ghost">ローカル保存</span>
+            <span className="pill pill--ghost">Keyboard</span>
+            <span className="pill pill--ghost">OCR</span>
+            <span className="pill pill--ghost">Local</span>
           </div>
         </div>
         <div className="header-actions">
           <div className="file-chip">
-            <span className="chip-label">選択中</span>
-            <span className="chip-value">{fileName || "未選択"}</span>
+            <span className="chip-label">File</span>
+            <span className="chip-value">{fileName || "No file selected"}</span>
           </div>
           <button className="reset-btn" onClick={handleReset}>
-            状態をリセット
+            Reset
           </button>
         </div>
       </header>
@@ -342,16 +339,16 @@ function App() {
           <section className="panel viewer">
             <div className="viewer__top">
               <div className="status">
-                <span className={`pill pill--${state.status}`}>状態: {state.status}</span>
-                {renderState === "rendering" && <span className="pill pill--render">描画中...</span>}
+                <span className={`pill pill--${state.status}`}>{state.status}</span>
+                {renderState === "rendering" && <span className="pill pill--render">rendering</span>}
               </div>
               <div className="viewer__meta">
-                <span className="meta-badge">ページ {state.currentPage} / {state.numPages || "--"}</span>
-                <span className="meta-badge">ズーム {state.zoom.toFixed(2)}x</span>
+                <span className="meta-badge">{state.currentPage} / {state.numPages || "—"}</span>
+                <span className="meta-badge">{state.zoom.toFixed(2)}×</span>
               </div>
             </div>
             <div className="viewer__canvas">
-              {!state.pdfDoc && <div className="placeholder">PDFを読み込むとここに表示されます</div>}
+              {!state.pdfDoc && <div className="placeholder">Drop a PDF to begin</div>}
               <canvas ref={canvasRef} />
             </div>
             <div className="viewer__actions">
@@ -360,7 +357,7 @@ function App() {
                 onClick={() => handleSave()}
                 disabled={!originalBuffer || state.status !== "ready"}
               >
-                適用して保存 (Ctrl+S)
+                Save with Rotations
               </button>
               <div className="footnote">
                 {state.errorMessage && <span className="error-text">{state.errorMessage}</span>}
@@ -378,16 +375,16 @@ function App() {
               onDragOver={(event) => event.preventDefault()}
               onDragLeave={handleDragLeave}
               onDrop={handleDrop}
-              aria-label="PDFをドラッグ&ドロップ"
+              aria-label="Drop PDF here"
             >
               <div>
-                <p className="label">PDFアップロード</p>
-                <p className="hint">50MB以内のPDF。ドラッグ&ドロップまたは選択で読み込みます。</p>
+                <p className="label">Upload</p>
+                <p className="hint">PDF files up to 50MB. Drag & drop or click to browse.</p>
               </div>
               <div className="upload__controls">
                 <label className="upload__btn">
                   <input type="file" accept="application/pdf" onChange={handleFileInput} />
-                  ファイルを選択
+                  Choose File
                 </label>
               </div>
             </div>
@@ -395,19 +392,19 @@ function App() {
 
           <section className="panel controls">
             <div className="controls__group">
-              <p className="label">ページ</p>
+              <p className="label">Page</p>
               <div className="button-row">
                 <button onClick={prevPage} disabled={state.currentPage <= 1 || state.status !== "ready"}>
-                  前へ
+                  Prev
                 </button>
                 <span className="page-indicator">
-                  {state.currentPage} / {state.numPages || "--"}
+                  {state.currentPage} / {state.numPages || "—"}
                 </span>
                 <button
                   onClick={nextPage}
                   disabled={state.currentPage >= state.numPages || state.status !== "ready"}
                 >
-                  次へ
+                  Next
                 </button>
               </div>
               <div className="button-row">
@@ -426,18 +423,18 @@ function App() {
                     }
                   }}
                   disabled={state.status !== "ready"}
-                  aria-label="ページ番号入力"
+                  aria-label="Page number"
                 />
                 <button onClick={handlePageJump} disabled={state.status !== "ready"}>
-                  移動
+                  Go
                 </button>
               </div>
             </div>
             <div className="controls__group">
-              <p className="label">OCR向き推定</p>
+              <p className="label">OCR Detection</p>
               <div className="threshold-row">
                 <label className="threshold-label">
-                  しきい値
+                  Threshold
                   <input
                     className="number-input"
                     type="number"
@@ -448,7 +445,7 @@ function App() {
                     value={ocrThreshold}
                     onChange={(event) => setOcrThreshold(clampThreshold(Number(event.target.value)))}
                     disabled={state.status !== "ready"}
-                    aria-label="OCR信頼度しきい値"
+                    aria-label="OCR confidence threshold"
                   />
                 </label>
                 <span className="threshold-value">{Math.round(ocrThreshold * 100)}%</span>
@@ -458,7 +455,7 @@ function App() {
                   onClick={handleDetectOrientation}
                   disabled={state.status !== "ready" || ocrLoading}
                 >
-                  {ocrLoading ? "推定中..." : "向き推定"}
+                  {ocrLoading ? "Detecting..." : "Detect"}
                 </button>
                 <button
                   onClick={handleApplySuggestion}
@@ -469,27 +466,27 @@ function App() {
                     || ocrSuggestion.page !== state.currentPage
                   }
                 >
-                  提案を適用
+                  Apply
                 </button>
               </div>
               <div className="ocr-status">
                 <div className="ocr-summary">
-                  <span className="label inline">推定</span>
+                  <span className="label inline">Result</span>
                   <span>{suggestionText}</span>
                   {ocrSuggestion?.processingMs !== undefined && (
-                    <span className="pill pill--render">処理 {ocrSuggestion.processingMs}ms</span>
+                    <span className="pill pill--render">{ocrSuggestion.processingMs}ms</span>
                   )}
                 </div>
-                <p className="hint">現在のページを画像化し、サーバーで向きを推定します（しきい値 {ocrThreshold}）。</p>
-                {ocrSuggestion && <p className="hint">推定対象ページ: {ocrSuggestion.page}</p>}
+                <p className="hint">Analyzes page orientation via server-side OCR.</p>
+                {ocrSuggestion && <p className="hint">Target page: {ocrSuggestion.page}</p>}
                 {ocrError && <span className="error-text">{ocrError}</span>}
               </div>
             </div>
             <div className="controls__group">
-              <p className="label">回転</p>
+              <p className="label">Rotation</p>
               <div className="button-row">
                 <button onClick={() => rotateCurrentPage(-90)} disabled={state.status !== "ready"}>
-                  -90°
+                  −90°
                 </button>
                 <button onClick={() => rotateCurrentPage(90)} disabled={state.status !== "ready"}>
                   +90°
@@ -497,12 +494,12 @@ function App() {
               </div>
             </div>
             <div className="controls__group">
-              <p className="label">ズーム</p>
+              <p className="label">Zoom</p>
               <div className="button-row">
                 <button onClick={() => setZoom(state.zoom - 0.25)} disabled={state.status === "idle"}>
-                  -
+                  −
                 </button>
-                <span className="page-indicator">{state.zoom.toFixed(2)}x</span>
+                <span className="page-indicator">{state.zoom.toFixed(2)}×</span>
                 <button onClick={() => setZoom(state.zoom + 0.25)} disabled={state.status === "idle"}>
                   +
                 </button>
@@ -511,23 +508,23 @@ function App() {
           </section>
 
           <section className="panel shortcuts">
-            <p className="label">ショートカット</p>
+            <p className="label">Shortcuts</p>
             <div className="shortcut-grid">
               <div className="shortcut-card">
                 <span className="kbd">→</span>
-                <span>+90° 回転して次ページ</span>
+                <span>Rotate +90° & next</span>
               </div>
               <div className="shortcut-card">
                 <span className="kbd">←</span>
-                <span>-90° 回転して次ページ</span>
+                <span>Rotate −90° & next</span>
               </div>
               <div className="shortcut-card">
                 <span className="kbd">↓ / ↑</span>
-                <span>ページ移動</span>
+                <span>Navigate pages</span>
               </div>
               <div className="shortcut-card">
-                <span className="kbd">Ctrl/Cmd + S</span>
-                <span>回転を適用して保存</span>
+                <span className="kbd">⌘/Ctrl+S</span>
+                <span>Save PDF</span>
               </div>
             </div>
           </section>
