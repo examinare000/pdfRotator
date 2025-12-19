@@ -19,7 +19,14 @@ export interface OrientationDetector {
   detect: (input: OrientationInput) => Promise<OrientationResult>;
 }
 
-type RecognizeResult = { data?: { text?: string; lines?: unknown[] } };
+type RecognizeResult = {
+  data?: {
+    text?: string;
+    lines?: unknown[];
+    words?: unknown[];
+    imageSize?: { width?: number; height?: number };
+  };
+};
 
 type RecognizeFn = (buffer: Buffer) => Promise<RecognizeResult>;
 
@@ -52,14 +59,10 @@ const normalizeTextSample = (text: string | null | undefined): string | undefine
   return normalized.slice(0, 120);
 };
 
-const countRecognizedCharacters = (text: string | undefined): number => {
-  if (!text) {
-    return 0;
-  }
-  return text.replace(/\s+/g, "").length;
-};
+const MIN_WORD_CONFIDENCE = 60;
+const PERIMETER_MARGIN_RATIO = 0.12;
 
-const MAX_SKEW_DEGREES = 15;
+type BoundingBox = { x0: number; y0: number; x1: number; y1: number };
 
 const toFiniteNumber = (value: unknown): number | null => {
   if (typeof value !== "number") return null;
@@ -67,8 +70,8 @@ const toFiniteNumber = (value: unknown): number | null => {
   return value;
 };
 
-const getBaselineSkewDegrees = (baseline: unknown): number | null => {
-  const record = baseline && typeof baseline === "object" ? (baseline as Record<string, unknown>) : null;
+const parseBoundingBox = (value: unknown): BoundingBox | null => {
+  const record = value && typeof value === "object" ? (value as Record<string, unknown>) : null;
   if (!record) return null;
 
   const x0 = toFiniteNumber(record.x0);
@@ -77,53 +80,150 @@ const getBaselineSkewDegrees = (baseline: unknown): number | null => {
   const y1 = toFiniteNumber(record.y1);
   if (x0 === null || y0 === null || x1 === null || y1 === null) return null;
 
-  const degrees = (Math.atan2(y1 - y0, x1 - x0) * 180) / Math.PI;
-  const normalized = ((degrees % 180) + 180) % 180;
-  const skew = normalized > 90 ? 180 - normalized : normalized;
-  return skew;
+  return { x0, y0, x1, y1 };
 };
 
-const countRecognizedCharactersFromLines = (lines: unknown): number | null => {
-  if (!Array.isArray(lines) || lines.length === 0) {
-    return null;
+const resolveImageSize = async (
+  data: unknown,
+  buffer: Buffer
+): Promise<{ width: number; height: number } | null> => {
+  const record = data && typeof data === "object" ? (data as Record<string, unknown>) : null;
+  const imageSize = record?.imageSize && typeof record.imageSize === "object"
+    ? (record.imageSize as Record<string, unknown>)
+    : null;
+  const width = toFiniteNumber(imageSize?.width);
+  const height = toFiniteNumber(imageSize?.height);
+  if (width !== null && height !== null) {
+    return { width, height };
   }
 
-  let total = 0;
-  for (const rawLine of lines) {
-    const line = rawLine && typeof rawLine === "object" ? (rawLine as Record<string, unknown>) : null;
-    if (!line) continue;
+  const metadata = await sharp(buffer).metadata();
+  if (metadata.width && metadata.height) {
+    return { width: metadata.width, height: metadata.height };
+  }
+  return null;
+};
 
-    const text = typeof line.text === "string" ? line.text : undefined;
-    const skew = getBaselineSkewDegrees(line.baseline);
+const collectWordCandidates = (data: unknown): Array<{
+  text: string;
+  confidence: number | null;
+  bbox: BoundingBox | null;
+}> => {
+  const record = data && typeof data === "object" ? (data as Record<string, unknown>) : null;
+  if (!record) return [];
 
-    if (skew !== null && skew > MAX_SKEW_DEGREES) {
+  const rawWords = Array.isArray(record.words)
+    ? record.words
+    : Array.isArray(record.lines)
+      ? record.lines
+      : [];
+
+  const words: Array<{ text: string; confidence: number | null; bbox: BoundingBox | null }> = [];
+  for (const rawWord of rawWords) {
+    const word = rawWord && typeof rawWord === "object" ? (rawWord as Record<string, unknown>) : null;
+    if (!word) continue;
+
+    const text = typeof word.text === "string" ? word.text.trim() : "";
+    if (!text) continue;
+
+    const confidenceValue = toFiniteNumber(word.confidence);
+    const confidence = confidenceValue === null ? null : confidenceValue;
+    const bbox = parseBoundingBox(word.bbox);
+
+    words.push({ text, confidence, bbox });
+  }
+
+  return words;
+};
+
+const splitAlnumTokens = (text: string): string[] => {
+  return text.split(/[^A-Za-z0-9]+/).filter(Boolean);
+};
+
+const hasDigit = (text: string): boolean => /\d/.test(text);
+
+const isWithinPerimeter = (
+  bbox: BoundingBox,
+  width: number,
+  height: number
+): boolean => {
+  const margin = Math.min(width, height) * PERIMETER_MARGIN_RATIO;
+  return (
+    bbox.x0 <= margin ||
+    bbox.y0 <= margin ||
+    bbox.x1 >= width - margin ||
+    bbox.y1 >= height - margin
+  );
+};
+
+const scorePageNumberTokens = (
+  data: unknown,
+  size: { width: number; height: number } | null
+): { score: number; bestToken?: string } => {
+  if (!size) {
+    return { score: 0 };
+  }
+
+  const words = collectWordCandidates(data);
+  let score = 0;
+  let bestToken: string | undefined;
+  let bestTokenScore = 0;
+
+  for (const word of words) {
+    if (word.confidence !== null && word.confidence < MIN_WORD_CONFIDENCE) {
+      continue;
+    }
+    if (!word.bbox || !isWithinPerimeter(word.bbox, size.width, size.height)) {
       continue;
     }
 
-    total += countRecognizedCharacters(text);
+    const tokens = splitAlnumTokens(word.text);
+    for (const token of tokens) {
+      if (!hasDigit(token)) {
+        continue;
+      }
+      const tokenScore = token.length;
+      score += tokenScore;
+      if (tokenScore > bestTokenScore) {
+        bestTokenScore = tokenScore;
+        bestToken = token;
+      }
+    }
   }
 
-  return total;
+  return { score, bestToken };
 };
 
-const countRecognizedCharactersFromResult = (data: unknown): number => {
-  const record = data && typeof data === "object" ? (data as Record<string, unknown>) : null;
-  if (!record) return 0;
+const detectWithPageNumberSweep = async (
+  buffer: Buffer,
+  signal: AbortSignal | undefined,
+  recognizeFn: RecognizeFn,
+  rotateFn: RotateFn
+): Promise<OrientationResult> => {
+  const candidates: Array<Exclude<Orientation, null>> = [0, 90, 180, 270];
+  const counts: Array<{ orientation: Exclude<Orientation, null>; count: number; token?: string }> =
+    [];
 
-  const countedFromLines = countRecognizedCharactersFromLines(record.lines);
-  if (countedFromLines !== null) {
-    if (countedFromLines > 0) return countedFromLines;
-    const fallbackText = typeof record.text === "string" ? record.text : undefined;
-    return countRecognizedCharacters(fallbackText);
+  for (const orientation of candidates) {
+    if (signal?.aborted) {
+      throw new Error("OCR処理が中断されました");
+    }
+
+    try {
+      const rotatedBuffer = await rotateFn(buffer, orientation);
+      const { data } = await recognizeFn(rotatedBuffer);
+      const size = await resolveImageSize(data, rotatedBuffer);
+      const { score, bestToken } = scorePageNumberTokens(data, size);
+      counts.push({ orientation, count: score, token: bestToken });
+    } catch (error) {
+      counts.push({ orientation, count: 0, token: undefined });
+      if (process.env.NODE_ENV !== "test") {
+        // eslint-disable-next-line no-console
+        console.warn("orientation_detect_failed", error);
+      }
+    }
   }
 
-  const text = typeof record.text === "string" ? record.text : undefined;
-  return countRecognizedCharacters(text);
-};
-
-const chooseBestOrientation = (
-  counts: Array<{ orientation: Exclude<Orientation, null>; count: number; text?: string }>
-): OrientationResult => {
   const total = counts.reduce((sum, item) => sum + item.count, 0);
   if (total === 0) {
     return { rotation: null, confidence: 0 };
@@ -140,39 +240,11 @@ const chooseBestOrientation = (
   }, counts[0]);
 
   const confidence = best.count / total;
-  return { rotation: best.orientation, confidence, textSample: normalizeTextSample(best.text) };
-};
-
-const detectWithSweep = async (
-  buffer: Buffer,
-  signal: AbortSignal | undefined,
-  recognizeFn: RecognizeFn,
-  rotateFn: RotateFn
-): Promise<OrientationResult> => {
-  const candidates: Array<Exclude<Orientation, null>> = [0, 90, 180, 270];
-  const counts: Array<{ orientation: Exclude<Orientation, null>; count: number; text?: string }> = [];
-
-  for (const orientation of candidates) {
-    if (signal?.aborted) {
-      throw new Error("OCR処理が中断されました");
-    }
-
-    try {
-      const rotatedBuffer = await rotateFn(buffer, orientation);
-      const { data } = await recognizeFn(rotatedBuffer);
-      const text = data?.text;
-      const count = countRecognizedCharactersFromResult(data);
-      counts.push({ orientation, count, text });
-    } catch (error) {
-      counts.push({ orientation, count: 0, text: undefined });
-      if (process.env.NODE_ENV !== "test") {
-        // eslint-disable-next-line no-console
-        console.warn("orientation_detect_failed", error);
-      }
-    }
-  }
-
-  return chooseBestOrientation(counts);
+  return {
+    rotation: best.orientation,
+    confidence,
+    textSample: normalizeTextSample(best.token),
+  };
 };
 
 const detectWithTesseract = async (
@@ -242,6 +314,16 @@ export const createTesseractDetector = ({
 
   return {
     async detect({ buffer, signal }) {
+      const pageNumberResult = await detectWithPageNumberSweep(
+        buffer,
+        signal,
+        recognizeFn,
+        rotateFn
+      );
+      if (pageNumberResult.rotation !== null) {
+        return pageNumberResult;
+      }
+
       if (!hasCustomStrategy) {
         try {
           return await detectWithTesseract(buffer, signal);
@@ -253,7 +335,7 @@ export const createTesseractDetector = ({
         }
       }
 
-      return await detectWithSweep(buffer, signal, recognizeFn, rotateFn);
+      return pageNumberResult;
     },
   };
 };
