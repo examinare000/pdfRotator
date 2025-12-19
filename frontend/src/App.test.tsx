@@ -267,6 +267,56 @@ describe("App", () => {
     });
   });
 
+  it("ドラッグで複数ページを選択できる", async () => {
+    mockUseViewerState.mockReturnValue(
+      makeViewerHook({
+        state: makeState({ status: "ready", numPages: 3, currentPage: 1, pdfDoc: createMockPdfDoc(3) }),
+      })
+    );
+
+    render(<App />);
+
+    const page1 = screen.getByRole("button", { name: "ページ 1" });
+    const page2 = screen.getByRole("button", { name: "ページ 2" });
+    const page3 = screen.getByRole("button", { name: "ページ 3" });
+
+    fireEvent.pointerDown(page1, { button: 0 });
+    fireEvent.pointerEnter(page2, { buttons: 1 });
+    fireEvent.pointerEnter(page3, { buttons: 1 });
+
+    await waitFor(() => {
+      expect(page1).toHaveAttribute("aria-pressed", "true");
+      expect(page2).toHaveAttribute("aria-pressed", "true");
+      expect(page3).toHaveAttribute("aria-pressed", "true");
+    });
+  });
+
+  it("選択解除ボタンで選択状態をクリアできる", async () => {
+    mockUseViewerState.mockReturnValue(
+      makeViewerHook({
+        state: makeState({ status: "ready", numPages: 2, currentPage: 1, pdfDoc: createMockPdfDoc(2) }),
+      })
+    );
+
+    render(<App />);
+    const user = userEvent.setup();
+
+    fireEvent.pointerDown(screen.getByRole("button", { name: "ページ 1" }), { button: 0 });
+    fireEvent.pointerDown(screen.getByRole("button", { name: "ページ 2" }), { button: 0 });
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "ページ 1" })).toHaveAttribute("aria-pressed", "true");
+      expect(screen.getByRole("button", { name: "ページ 2" })).toHaveAttribute("aria-pressed", "true");
+    });
+
+    await user.click(screen.getByRole("button", { name: "選択解除" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "ページ 1" })).toHaveAttribute("aria-pressed", "false");
+      expect(screen.getByRole("button", { name: "ページ 2" })).toHaveAttribute("aria-pressed", "false");
+    });
+  });
+
   it("ヘルプモーダルを開閉できる", async () => {
     mockUseViewerState.mockReturnValue(makeViewerHook());
     render(<App />);
@@ -278,5 +328,46 @@ describe("App", () => {
 
     await user.click(screen.getByRole("button", { name: "閉じる" }));
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "ヘルプ" })).not.toBeInTheDocument());
+  });
+
+  it("ダブルクリックでプレビューを開き、Escで閉じても選択を維持する", async () => {
+    mockUseViewerState.mockReturnValue(
+      makeViewerHook({
+        state: makeState({ status: "ready", numPages: 1, currentPage: 1, pdfDoc: createMockPdfDoc() }),
+      })
+    );
+
+    render(<App />);
+    const user = userEvent.setup();
+    const pageButton = screen.getByRole("button", { name: "ページ 1" });
+
+    fireEvent.pointerDown(pageButton, { button: 0 });
+    await waitFor(() => expect(pageButton).toHaveAttribute("aria-pressed", "true"));
+
+    await user.dblClick(pageButton);
+    expect(await screen.findByRole("dialog", { name: "プレビュー" })).toBeInTheDocument();
+
+    fireEvent.keyDown(window, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "プレビュー" })).not.toBeInTheDocument());
+    expect(pageButton).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("プレビューの閉じるボタンでモーダルを閉じられる", async () => {
+    mockUseViewerState.mockReturnValue(
+      makeViewerHook({
+        state: makeState({ status: "ready", numPages: 1, currentPage: 1, pdfDoc: createMockPdfDoc() }),
+      })
+    );
+
+    render(<App />);
+    const user = userEvent.setup();
+    const pageButton = screen.getByRole("button", { name: "ページ 1" });
+
+    await user.dblClick(pageButton);
+    expect(await screen.findByRole("dialog", { name: "プレビュー" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "閉じる" }));
+
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "プレビュー" })).not.toBeInTheDocument());
   });
 });
