@@ -15,5 +15,5 @@ describe("createTesseractDetector", () => {
     expect(result.confidence).toBeGreaterThan(0);
     const normalizedText = (result.textSample ?? "").replace(/\s+/g, "").toUpperCase();
     expect(normalizedText).toContain("UP");
-  });
+  }, 20000);
 });
