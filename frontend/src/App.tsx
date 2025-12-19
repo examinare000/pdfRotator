@@ -676,9 +676,6 @@ function App() {
 
   return (
     <div className="app">
-      <div className="glow glow--one" />
-      <div className="glow glow--two" />
-
       <Header
         fileName={fileName}
         onReset={handleReset}
