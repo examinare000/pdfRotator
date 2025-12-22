@@ -8,6 +8,7 @@ import type { PdfDocumentProxy, PdfPageProxy } from "./lib/pdf";
 const mockDetectOrientationForPage = vi.fn();
 const mockUseViewerState = vi.fn();
 const mockCreatePdfJsDistLoader = vi.fn();
+const mockFetchHealth = vi.fn();
 
 vi.mock("./lib/ocr", async () => {
   const actual = await vi.importActual<typeof import("./lib/ocr")>("./lib/ocr");
@@ -26,6 +27,12 @@ vi.mock("./hooks/useViewerState", () => {
 vi.mock("./lib/pdfjs", () => {
   return {
     createPdfJsDistLoader: (...args: unknown[]) => mockCreatePdfJsDistLoader(...args),
+  };
+});
+
+vi.mock("./lib/health", () => {
+  return {
+    fetchHealth: (...args: unknown[]) => mockFetchHealth(...args),
   };
 });
 
@@ -98,6 +105,8 @@ describe("App", () => {
     mockUseViewerState.mockReset();
     mockCreatePdfJsDistLoader.mockReset();
     mockCreatePdfJsDistLoader.mockReturnValue({ loadFromArrayBuffer: vi.fn() });
+    mockFetchHealth.mockReset();
+    mockFetchHealth.mockResolvedValue({ version: "1.0.0", ocrEnabled: true });
   });
 
   it("DnDでPDF以外をドロップするとエラーメッセージを表示する", async () => {
@@ -143,6 +152,54 @@ describe("App", () => {
 
     await waitFor(() => expect(loadFromArrayBuffer).toHaveBeenCalledTimes(1));
     expect(screen.getByText("sample.pdf")).toBeInTheDocument();
+  });
+
+  it("初期状態ではアップロードとビューの主要要素が表示される", async () => {
+    mockUseViewerState.mockReturnValue(makeViewerHook());
+    render(<App />);
+
+    await waitFor(() => expect(mockFetchHealth).toHaveBeenCalled());
+    expect(screen.getByText("PDFアップロード")).toBeInTheDocument();
+    expect(screen.getAllByText("OCR向き推定").length).toBeGreaterThan(0);
+    expect(screen.getByText("回転")).toBeInTheDocument();
+    expect(screen.getByText("ショートカット")).toBeInTheDocument();
+    expect(screen.getByText("PDFを読み込むとここに表示されます")).toBeInTheDocument();
+  });
+
+  it("PDF未読み込み時は保存ボタンが無効になる", async () => {
+    mockUseViewerState.mockReturnValue(makeViewerHook());
+    render(<App />);
+
+    await waitFor(() => expect(mockFetchHealth).toHaveBeenCalled());
+    expect(screen.getByRole("button", { name: "適用して保存 (Ctrl+S)" })).toBeDisabled();
+  });
+
+  it("ロード中は再選択ボタンが無効になる", async () => {
+    mockUseViewerState.mockReturnValue(
+      makeViewerHook({
+        state: makeState({ status: "loading" }),
+      })
+    );
+    render(<App />);
+
+    await waitFor(() => expect(mockFetchHealth).toHaveBeenCalled());
+    expect(screen.getByRole("button", { name: "元PDFを再選択" })).toBeDisabled();
+  });
+
+  it("OCRが無効な場合はボタンを無効化し説明を表示する", async () => {
+    mockFetchHealth.mockResolvedValue({ version: "1.0.0", ocrEnabled: false });
+    mockUseViewerState.mockReturnValue(
+      makeViewerHook({
+        state: makeState({ status: "ready", numPages: 1, currentPage: 1, pdfDoc: createMockPdfDoc() }),
+      })
+    );
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByText("OCRが無効化されています（`OCR_ENABLED=false`）。")).toBeInTheDocument();
+    });
+    expect(screen.getByRole("button", { name: "向き推定" })).toBeDisabled();
   });
 
   it("OCRしきい値を指定して向き推定を実行できる", async () => {
@@ -300,6 +357,23 @@ describe("App", () => {
     expect(viewerHook.rotatePage).toHaveBeenCalledWith(2, -90);
   });
 
+  it("入力フォーカス中はショートカット回転しない", async () => {
+    const viewerHook = makeViewerHook({
+      state: makeState({ status: "ready", numPages: 2, currentPage: 1, pdfDoc: createMockPdfDoc(2) }),
+    });
+    mockUseViewerState.mockReturnValue(viewerHook);
+
+    render(<App />);
+
+    await waitFor(() => expect(mockFetchHealth).toHaveBeenCalled());
+    fireEvent.pointerDown(screen.getByRole("button", { name: "ページ 1" }), { button: 0 });
+    const thresholdInput = screen.getByLabelText("OCR信頼度しきい値");
+    thresholdInput.focus();
+
+    fireEvent.keyDown(thresholdInput, { key: "ArrowRight", ctrlKey: true });
+    expect(viewerHook.rotatePage).not.toHaveBeenCalled();
+  });
+
   it("Ctrl+上下で選択ページを180度回転し、Escで選択解除できる", async () => {
     const viewerHook = makeViewerHook({
       state: makeState({ status: "ready", numPages: 2, currentPage: 1, pdfDoc: createMockPdfDoc(2) }),
@@ -375,6 +449,30 @@ describe("App", () => {
       expect(screen.getByRole("button", { name: "ページ 1" })).toHaveAttribute("aria-pressed", "false");
       expect(screen.getByRole("button", { name: "ページ 2" })).toHaveAttribute("aria-pressed", "false");
     });
+  });
+
+  it("新しいPDFを読み込むと選択状態をリセットする", async () => {
+    const loadFromArrayBuffer = vi.fn(async () => {});
+    mockUseViewerState.mockReturnValue(
+      makeViewerHook({
+        loadFromArrayBuffer,
+        state: makeState({ status: "ready", numPages: 2, currentPage: 1, pdfDoc: createMockPdfDoc(2) }),
+      })
+    );
+
+    render(<App />);
+
+    fireEvent.pointerDown(screen.getByRole("button", { name: "ページ 1" }), { button: 0 });
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "ページ 1" })).toHaveAttribute("aria-pressed", "true");
+    });
+
+    const dropzone = screen.getByLabelText("PDFをドラッグ&ドロップ");
+    const file = new File([new Uint8Array([1, 2, 3])], "sample.pdf", { type: "application/pdf" });
+    fireEvent.drop(dropzone, { dataTransfer: { files: [file] } });
+
+    await waitFor(() => expect(loadFromArrayBuffer).toHaveBeenCalledTimes(1));
+    expect(screen.getByRole("button", { name: "ページ 1" })).toHaveAttribute("aria-pressed", "false");
   });
 
   it("ヘルプモーダルを開閉できる", async () => {
