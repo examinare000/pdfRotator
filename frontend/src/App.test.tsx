@@ -42,6 +42,7 @@ type MockViewerState = {
   pdfDoc: unknown;
   numPages: number;
   currentPage: number;
+  selectedPages: number[];
   rotationMap: Record<number, 0 | 90 | 180 | 270>;
   zoom: number;
   errorMessage: string | null;
@@ -53,6 +54,7 @@ const makeState = (override?: Partial<MockViewerState>): MockViewerState => {
     pdfDoc: null,
     numPages: 0,
     currentPage: 1,
+    selectedPages: [],
     rotationMap: {},
     zoom: 1,
     errorMessage: null,
@@ -171,10 +173,10 @@ describe("App", () => {
     expect(options).toMatchObject({ threshold: 0.8 });
   });
 
-  it("向き推定ボタンで現在ページ以降を推定して提案を自動適用する", async () => {
+  it("向き推定ボタンで全ページを推定して提案を自動適用する", async () => {
     mockDetectOrientationForPage
       .mockResolvedValueOnce({
-        page: 2,
+        page: 1,
         rotation: 180,
         confidence: 0.91,
         processingMs: 12,
@@ -182,10 +184,18 @@ describe("App", () => {
         viewport: { width: 100, height: 100 },
       })
       .mockResolvedValueOnce({
-        page: 3,
+        page: 2,
         rotation: 90,
         confidence: 0.92,
         processingMs: 10,
+        success: true,
+        viewport: { width: 100, height: 100 },
+      })
+      .mockResolvedValueOnce({
+        page: 3,
+        rotation: 90,
+        confidence: 0.9,
+        processingMs: 8,
         success: true,
         viewport: { width: 100, height: 100 },
       });
@@ -196,7 +206,54 @@ describe("App", () => {
         numPages: 3,
         currentPage: 2,
         pdfDoc: createMockPdfDoc(),
+        rotationMap: { 1: 90 },
+      }),
+    });
+
+    mockUseViewerState.mockReturnValue(viewerHook);
+
+    render(<App />);
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole("button", { name: "向き推定" }));
+
+    await waitFor(() => expect(mockDetectOrientationForPage).toHaveBeenCalledTimes(3));
+    expect(mockDetectOrientationForPage.mock.calls[0][1]).toBe(1);
+    expect(mockDetectOrientationForPage.mock.calls[1][1]).toBe(2);
+    expect(mockDetectOrientationForPage.mock.calls[2][1]).toBe(3);
+
+    expect(viewerHook.rotatePage).toHaveBeenCalledWith(1, 90);
+    expect(viewerHook.rotatePage).toHaveBeenCalledWith(2, 90);
+    expect(viewerHook.rotatePage).toHaveBeenCalledWith(3, 90);
+  });
+
+  it("選択ページがある場合はそのページのみ向き推定する", async () => {
+    mockDetectOrientationForPage
+      .mockResolvedValueOnce({
+        page: 2,
+        rotation: 180,
+        confidence: 0.91,
+        processingMs: 12,
+        success: true,
+        viewport: { width: 100, height: 100 },
+      })
+      .mockResolvedValueOnce({
+        page: 4,
+        rotation: 90,
+        confidence: 0.92,
+        processingMs: 10,
+        success: true,
+        viewport: { width: 100, height: 100 },
+      });
+
+    const viewerHook = makeViewerHook({
+      state: makeState({
+        status: "ready",
+        numPages: 4,
+        currentPage: 1,
+        pdfDoc: createMockPdfDoc(),
         rotationMap: { 2: 90 },
+        selectedPages: [4, 2],
       }),
     });
 
@@ -209,10 +266,10 @@ describe("App", () => {
 
     await waitFor(() => expect(mockDetectOrientationForPage).toHaveBeenCalledTimes(2));
     expect(mockDetectOrientationForPage.mock.calls[0][1]).toBe(2);
-    expect(mockDetectOrientationForPage.mock.calls[1][1]).toBe(3);
+    expect(mockDetectOrientationForPage.mock.calls[1][1]).toBe(4);
 
     expect(viewerHook.rotatePage).toHaveBeenCalledWith(2, 90);
-    expect(viewerHook.rotatePage).toHaveBeenCalledWith(3, 90);
+    expect(viewerHook.rotatePage).toHaveBeenCalledWith(4, 90);
   });
 
   it("Ctrl+左右で選択ページを回転する", async () => {

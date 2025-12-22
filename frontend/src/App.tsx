@@ -19,6 +19,18 @@ const DEFAULT_OCR_THRESHOLD = 0.6;
 type RenderState = "idle" | "rendering" | "error";
 type SelectionMode = "add" | "remove";
 
+const normalizeSelectedPages = (pages: number[], numPages: number): number[] => {
+  if (numPages < 1) return [];
+  const uniquePages = new Set<number>();
+  for (const page of pages) {
+    if (!Number.isFinite(page)) continue;
+    const normalized = Math.trunc(page);
+    if (normalized < 1 || normalized > numPages) continue;
+    uniquePages.add(normalized);
+  }
+  return Array.from(uniquePages).sort((a, b) => a - b);
+};
+
 const clampThreshold = (value: number): number => {
   if (Number.isNaN(value)) return 0;
   if (value < 0) return 0;
@@ -446,25 +458,29 @@ function App() {
     const fetcher: typeof fetch = (input, init) =>
       fetch(input, { ...init, signal: abortController.signal });
 
-    const startPage = state.currentPage;
-    const endPage = state.numPages;
-    const total = Math.max(0, endPage - startPage + 1);
+    const normalizedSelection = normalizeSelectedPages(state.selectedPages, state.numPages);
+    const targetPages =
+      normalizedSelection.length > 0
+        ? normalizedSelection
+        : Array.from({ length: state.numPages }, (_, index) => index + 1);
+    const total = targetPages.length;
 
     setOcrLoading(true);
     setOcrError(null);
-    setOcrProgress(total > 0 ? { current: 0, total, page: startPage } : null);
+    setOcrProgress(total > 0 ? { current: 0, total, page: targetPages[0] } : null);
 
     try {
       let workingRotationMap = state.rotationMap;
       const errors: Array<{ page: number; message: string }> = [];
 
-      for (let pageNumber = startPage; pageNumber <= endPage; pageNumber += 1) {
+      for (let index = 0; index < targetPages.length; index += 1) {
+        const pageNumber = targetPages[index];
         if (abortController.signal.aborted) {
           throw new Error("OCR処理が中断されました");
         }
 
         setOcrProgress({
-          current: pageNumber - startPage + 1,
+          current: index + 1,
           total,
           page: pageNumber,
         });
@@ -659,7 +675,7 @@ function App() {
                   <p className="hint">OCRが無効化されています（`OCR_ENABLED=false`）。</p>
                 ) : (
                   <p className="hint">
-                    現在ページ以降を順番に画像化し、サーバーで向きを推定して自動適用します（しきい値 {ocrThreshold}）。
+                    選択ページがある場合はそのページを順番に画像化し、なければ全ページを対象にサーバーで向きを推定して自動適用します（しきい値 {ocrThreshold}）。
                   </p>
                 )}
                 {ocrSuggestion && <p className="hint">推定対象ページ: {ocrSuggestion.page}</p>}
@@ -706,7 +722,7 @@ function App() {
             </div>
             <div className="modal__body">
               <p className="hint">
-                PDFはブラウザ内で処理します。OCR実行時のみ、現在ページの画像をサーバへ送信します。
+                PDFはブラウザ内で処理します。OCR実行時のみ、選択ページ（未選択なら全ページ）の画像をサーバへ送信します。
               </p>
               <p className="label">ショートカット</p>
               <ul className="help-list">

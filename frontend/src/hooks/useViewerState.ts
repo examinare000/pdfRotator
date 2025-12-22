@@ -9,6 +9,7 @@ export type ViewerState = {
   pdfDoc: PdfDocumentProxy | null;
   numPages: number;
   currentPage: number;
+  selectedPages: number[];
   rotationMap: PageRotationMap;
   zoom: number;
   errorMessage: string | null;
@@ -35,6 +36,7 @@ const INITIAL_STATE: ViewerState = {
   pdfDoc: null,
   numPages: 0,
   currentPage: 1,
+  selectedPages: [],
   rotationMap: {},
   zoom: 1,
   errorMessage: null,
@@ -67,6 +69,7 @@ export const useViewerState = (
       pdfDoc: doc,
       numPages: doc.numPages,
       currentPage: 1,
+      selectedPages: [],
       rotationMap: {},
       zoom: 1,
       errorMessage: null,
@@ -92,6 +95,7 @@ export const useViewerState = (
           pdfDoc: null,
           numPages: 0,
           currentPage: 1,
+          selectedPages: [],
           rotationMap: {},
         }));
       }
