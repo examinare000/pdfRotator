@@ -720,8 +720,20 @@ function App() {
               </div>
             </div>
             <p className="hint">クリック/ドラッグで複数選択。Ctrl/Cmd + ←/→/↑/↓ で回転。ダブルクリックで拡大。</p>
-            <div className="viewer__grid" ref={viewerGridRef}>
-              {!state.pdfDoc && <div className="placeholder">PDFを読み込むとここに表示されます</div>}
+            <div
+              className={`viewer__grid${dragging ? " viewer__grid--dragging" : ""}`}
+              ref={viewerGridRef}
+              onDragEnter={handleDragEnter}
+              onDragOver={(event) => event.preventDefault()}
+              onDragLeave={handleDragLeave}
+              onDrop={handleDrop}
+            >
+              {dragging && (
+                <div className="viewer__drop-overlay">
+                  <span>PDFをドロップして読み込み</span>
+                </div>
+              )}
+              {!state.pdfDoc && !dragging && <div className="placeholder">PDFを読み込むとここに表示されます</div>}
               {state.pdfDoc && (
                 <div
                   className="thumb-grid"

@@ -543,6 +543,30 @@ button:disabled {
   max-height: 72vh;
   overflow: auto;
   padding: var(--space-md);
+  transition: border-color 0.2s var(--ease-out), background 0.2s var(--ease-out);
+}
+
+.viewer__grid--dragging {
+  border-color: var(--accent);
+  background: var(--accent-muted);
+}
+
+.viewer__drop-overlay {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(10, 10, 10, 0.85);
+  border: 2px dashed var(--accent);
+  z-index: 10;
+  pointer-events: none;
+}
+
+.viewer__drop-overlay span {
+  font-family: var(--font-display);
+  font-size: 20px;
+  font-style: italic;
+  color: var(--accent);
 }
 
 .thumb-grid {
