@@ -110,7 +110,7 @@
 - 静的配信: `server/public` を `express.static` で配信し、非APIパスは `index.html` を返す（SPAフォールバック）。
 - 配布: `scripts/package-win.ps1` により `frontend` をビルドし `server/public` に配置、`server` をビルド、必要なランタイムを `release/pdfrotator-win64.zip` にまとめる。node.exe は既定で同梱され、利用者は解凍して `start.cmd` を実行するだけで起動（配布先で Node.js 不要）。node.exe を同梱しない場合は `-NoNode` を使用する。
 - 設定: `STATIC_DIR` 環境変数で静的配信パスを上書き可能（未設定時は `server/public`）。OCR設定は `OCR_ENABLED`, `OCR_TIMEOUT_MS`, `OCR_TEXT_SAMPLE_ENABLED`, `OCR_TEXT_SAMPLE_TIMEOUT_MS`, `CORS_ORIGIN` を使用。
-  - `OCR_TIMEOUT_MS` は環境依存で調整する（目安: 8000ms）。重い環境ではより長くする。
+  - `OCR_TIMEOUT_MS` は環境依存で調整する（目安: 15000ms）。重い環境ではより長くする。
 
 ## 7. PDF処理・保存ロジック（フロント）
 - 保存手順
