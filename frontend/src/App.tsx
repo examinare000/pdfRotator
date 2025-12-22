@@ -31,6 +31,11 @@ const normalizeSelectedPages = (pages: number[], numPages: number): number[] => 
   return Array.from(uniquePages).sort((a, b) => a - b);
 };
 
+const THUMB_MIN_WIDTH = 140;
+const THUMB_GRID_GAP = 12;
+const THUMB_GRID_PADDING = 14;
+const THUMB_ROW_BUFFER = 2;
+
 const clampThreshold = (value: number): number => {
   if (Number.isNaN(value)) return 0;
   if (value < 0) return 0;
@@ -78,6 +83,7 @@ function App() {
 
   const thumbCanvasRef = useRef(new Map<number, HTMLCanvasElement | null>());
   const thumbMetaRef = useRef(new Map<number, { rotation: number }>());
+  const rowHeightRef = useRef(260);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const dragDepthRef = useRef(0);
   const selectingRef = useRef(false);
@@ -98,8 +104,15 @@ function App() {
   const [health, setHealth] = useState<HealthInfo | null>(null);
   const [selectedPages, setSelectedPages] = useState<number[]>([]);
   const [previewPage, setPreviewPage] = useState<number | null>(null);
+  const [rowHeight, setRowHeight] = useState(rowHeightRef.current);
+  const [gridMetrics, setGridMetrics] = useState({
+    scrollTop: 0,
+    viewportHeight: 0,
+    containerWidth: 0,
+  });
   const ocrAbortRef = useRef<AbortController | null>(null);
   const previewCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const viewerGridRef = useRef<HTMLDivElement | null>(null);
 
   const renderThumbnail = useCallback(
     async (pageNumber: number, canvas: HTMLCanvasElement) => {
@@ -136,6 +149,16 @@ function App() {
     },
     [renderThumbnail]
   );
+
+  const measureThumbCardRef = useCallback((node: HTMLButtonElement | null) => {
+    if (!node) return;
+    const rect = node.getBoundingClientRect();
+    if (!rect.height) return;
+    const nextHeight = Math.round(rect.height);
+    if (Math.abs(nextHeight - rowHeightRef.current) < 2) return;
+    rowHeightRef.current = nextHeight;
+    setRowHeight(nextHeight);
+  }, []);
 
   const handleFile = async (file: File) => {
     if (!isPdfFile(file)) {
@@ -195,6 +218,76 @@ function App() {
     }
   };
 
+  const updateGridMetrics = useCallback(() => {
+    const container = viewerGridRef.current;
+    if (!container) return;
+    setGridMetrics({
+      scrollTop: container.scrollTop,
+      viewportHeight: container.clientHeight,
+      containerWidth: container.clientWidth,
+    });
+  }, []);
+
+  useEffect(() => {
+    const container = viewerGridRef.current;
+    if (!container) return;
+    let frame: number | null = null;
+    const onScroll = () => {
+      if (frame !== null) return;
+      frame = window.requestAnimationFrame(() => {
+        frame = null;
+        updateGridMetrics();
+      });
+    };
+    updateGridMetrics();
+    container.addEventListener("scroll", onScroll, { passive: true });
+    window.addEventListener("resize", updateGridMetrics);
+    return () => {
+      if (frame !== null) {
+        window.cancelAnimationFrame(frame);
+      }
+      container.removeEventListener("scroll", onScroll);
+      window.removeEventListener("resize", updateGridMetrics);
+    };
+  }, [updateGridMetrics]);
+
+  const thumbGridWindow = useMemo(() => {
+    if (!state.pdfDoc || state.numPages <= 0) {
+      return {
+        pageNumbers: [],
+        paddingTop: 0,
+        paddingBottom: 0,
+      };
+    }
+    const fallbackWidth = typeof window !== "undefined" ? window.innerWidth : 0;
+    const fallbackHeight = typeof window !== "undefined" ? window.innerHeight : 0;
+    const containerWidth = gridMetrics.containerWidth || fallbackWidth;
+    const viewportHeight = gridMetrics.viewportHeight || fallbackHeight;
+    const innerWidth = Math.max(0, containerWidth - THUMB_GRID_PADDING * 2);
+    const columns = Math.max(
+      1,
+      Math.floor((innerWidth + THUMB_GRID_GAP) / (THUMB_MIN_WIDTH + THUMB_GRID_GAP))
+    );
+    const rowStride = rowHeight + THUMB_GRID_GAP;
+    const totalRows = Math.ceil(state.numPages / columns);
+    const startRow = Math.max(0, Math.floor(gridMetrics.scrollTop / rowStride) - THUMB_ROW_BUFFER);
+    const endRow = Math.min(
+      totalRows - 1,
+      Math.floor((gridMetrics.scrollTop + viewportHeight) / rowStride) + THUMB_ROW_BUFFER
+    );
+    const startIndex = startRow * columns;
+    const endIndex = Math.min(state.numPages, (endRow + 1) * columns);
+    const pageNumbers = [];
+    for (let index = startIndex; index < endIndex; index += 1) {
+      pageNumbers.push(index + 1);
+    }
+    return {
+      pageNumbers,
+      paddingTop: startRow * rowStride,
+      paddingBottom: Math.max(0, (totalRows - endRow - 1) * rowStride),
+    };
+  }, [gridMetrics, rowHeight, state.numPages, state.pdfDoc]);
+
   useEffect(() => {
     if (!state.pdfDoc || state.status !== "ready") {
       return;
@@ -203,7 +296,7 @@ function App() {
     const run = async () => {
       setRenderState("rendering");
       try {
-        for (let pageNumber = 1; pageNumber <= state.numPages; pageNumber += 1) {
+        for (const pageNumber of thumbGridWindow.pageNumbers) {
           if (cancelled) return;
           const canvas = thumbCanvasRef.current.get(pageNumber);
           if (!canvas) continue;
@@ -224,7 +317,7 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [renderThumbnail, state.pdfDoc, state.numPages, state.rotationMap, state.status]);
+  }, [renderThumbnail, state.pdfDoc, state.rotationMap, state.status, thumbGridWindow.pageNumbers]);
 
   useEffect(() => {
     let cancelled = false;
@@ -559,12 +652,19 @@ function App() {
               </div>
             </div>
             <p className="hint">クリック/ドラッグで複数選択。Ctrl/Cmd + ←/→/↑/↓ で回転。ダブルクリックで拡大。</p>
-            <div className="viewer__grid">
+            <div className="viewer__grid" ref={viewerGridRef}>
               {!state.pdfDoc && <div className="placeholder">PDFを読み込むとここに表示されます</div>}
               {state.pdfDoc && (
-                <div className="thumb-grid" role="list" aria-label="ページ一覧">
-                  {Array.from({ length: state.numPages }, (_, index) => {
-                    const pageNumber = index + 1;
+                <div
+                  className="thumb-grid"
+                  role="list"
+                  aria-label="ページ一覧"
+                  style={{
+                    paddingTop: thumbGridWindow.paddingTop,
+                    paddingBottom: thumbGridWindow.paddingBottom,
+                  }}
+                >
+                  {thumbGridWindow.pageNumbers.map((pageNumber, index) => {
                     const isSelected = selectedSet.has(pageNumber);
                     const rotation = state.rotationMap[pageNumber] ?? 0;
                     return (
@@ -578,16 +678,17 @@ function App() {
                         onPointerDown={handleThumbPointerDown(pageNumber, isSelected)}
                         onPointerEnter={handleThumbPointerEnter(pageNumber)}
                         onDoubleClick={handleThumbDoubleClick(pageNumber)}
+                        ref={index === 0 ? measureThumbCardRef : undefined}
                       >
                         <div className="thumb-canvas">
                           <canvas
                             ref={setThumbCanvas(pageNumber)}
                           />
                         </div>
-                <div className="thumb-meta">
-                  <span>p.{pageNumber}</span>
-                  {rotation !== 0 && <span className="pill pill--ghost">{rotation}°</span>}
-                </div>
+                        <div className="thumb-meta">
+                          <span>p.{pageNumber}</span>
+                          {rotation !== 0 && <span className="pill pill--ghost">{rotation}°</span>}
+                        </div>
                       </button>
                     );
                   })}
