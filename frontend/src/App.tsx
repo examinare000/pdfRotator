@@ -83,6 +83,7 @@ function App() {
 
   const thumbCanvasRef = useRef(new Map<number, HTMLCanvasElement | null>());
   const thumbMetaRef = useRef(new Map<number, { rotation: number }>());
+  const thumbRenderQueueRef = useRef(new Map<number, Promise<void>>());
   const rowHeightRef = useRef(260);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const dragDepthRef = useRef(0);
@@ -112,6 +113,7 @@ function App() {
   });
   const ocrAbortRef = useRef<AbortController | null>(null);
   const previewCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const previewRenderQueueRef = useRef<Promise<void>>(Promise.resolve());
   const viewerGridRef = useRef<HTMLDivElement | null>(null);
   const helpModalRef = useRef<HTMLDivElement | null>(null);
   const previewModalRef = useRef<HTMLDivElement | null>(null);
@@ -124,14 +126,28 @@ function App() {
       if (meta?.rotation === rotation && canvas.width > 0) {
         return;
       }
-      const page = await state.pdfDoc.getPage(pageNumber);
-      await renderPageToCanvas(page, canvas, {
-        scale: 1,
-        rotation,
-        maxWidth: 180,
-        maxHeight: 240,
-      });
-      thumbMetaRef.current.set(pageNumber, { rotation });
+      const queue = thumbRenderQueueRef.current;
+      const previous = queue.get(pageNumber) ?? Promise.resolve();
+      const next = previous
+        .catch(() => {})
+        .then(async () => {
+          const page = await state.pdfDoc!.getPage(pageNumber);
+          await renderPageToCanvas(page, canvas, {
+            scale: 1,
+            rotation,
+            maxWidth: 180,
+            maxHeight: 240,
+          });
+          thumbMetaRef.current.set(pageNumber, { rotation });
+        });
+      queue.set(pageNumber, next);
+      try {
+        await next;
+      } finally {
+        if (queue.get(pageNumber) === next) {
+          queue.delete(pageNumber);
+        }
+      }
     },
     [state.pdfDoc, state.rotationMap, state.status]
   );
@@ -488,12 +504,20 @@ function App() {
       try {
         const page = await state.pdfDoc.getPage(previewPage);
         const rotation = state.rotationMap[previewPage] ?? 0;
-        await renderPageToCanvas(page, previewCanvasRef.current, {
-          scale: 1.6,
-          rotation,
-          maxWidth: 900,
-          maxHeight: 1200,
-        });
+        const previous = previewRenderQueueRef.current;
+        const next = previous
+          .catch(() => {})
+          .then(() =>
+            renderPageToCanvas(page, previewCanvasRef.current!, {
+              scale: 1.6,
+              rotation,
+              maxWidth: 900,
+              maxHeight: 1200,
+            })
+          )
+          .then(() => undefined);
+        previewRenderQueueRef.current = next;
+        await next;
       } catch (error) {
         const text = error instanceof Error ? error.message : "プレビューの描画に失敗しました";
         setMessage(text);

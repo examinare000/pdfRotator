@@ -610,4 +610,37 @@ describe("App", () => {
 
     rafSpy.mockRestore();
   });
+
+  it("同一サムネイルは連続描画を直列化する", async () => {
+    const renderPageToCanvas = (await import("./lib/pdf")).renderPageToCanvas as unknown as vi.Mock;
+    renderPageToCanvas.mockReset();
+    let active = 0;
+    let maxActive = 0;
+    const page = {
+      getViewport: vi.fn(() => ({ width: 100, height: 100 })),
+    };
+    const pdfDoc = {
+      numPages: 1,
+      getPage: vi.fn(async () => page),
+    } as PdfDocumentProxy;
+
+    renderPageToCanvas.mockImplementation(async () => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      active -= 1;
+      return { width: 100, height: 100 };
+    });
+
+    mockUseViewerState.mockReturnValue(
+      makeViewerHook({
+        state: makeState({ status: "ready", numPages: 1, currentPage: 1, pdfDoc }),
+      })
+    );
+
+    render(<App />);
+
+    await waitFor(() => expect(renderPageToCanvas).toHaveBeenCalled());
+    await waitFor(() => expect(maxActive).toBe(1));
+  });
 });
