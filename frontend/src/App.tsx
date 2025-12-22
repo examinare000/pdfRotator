@@ -458,7 +458,7 @@ function App() {
     const fetcher: typeof fetch = (input, init) =>
       fetch(input, { ...init, signal: abortController.signal });
 
-    const normalizedSelection = normalizeSelectedPages(state.selectedPages, state.numPages);
+    const normalizedSelection = normalizeSelectedPages(selectedPages, state.numPages);
     const targetPages =
       normalizedSelection.length > 0
         ? normalizedSelection

@@ -253,7 +253,7 @@ describe("App", () => {
         currentPage: 1,
         pdfDoc: createMockPdfDoc(),
         rotationMap: { 2: 90 },
-        selectedPages: [4, 2],
+        selectedPages: [],
       }),
     });
 
@@ -261,6 +261,9 @@ describe("App", () => {
 
     render(<App />);
     const user = userEvent.setup();
+
+    fireEvent.pointerDown(screen.getByRole("button", { name: "ページ 2" }), { button: 0 });
+    fireEvent.pointerDown(screen.getByRole("button", { name: "ページ 4" }), { button: 0 });
 
     await user.click(screen.getByRole("button", { name: "向き推定" }));
 
