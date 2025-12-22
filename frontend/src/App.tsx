@@ -113,6 +113,8 @@ function App() {
   const ocrAbortRef = useRef<AbortController | null>(null);
   const previewCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const viewerGridRef = useRef<HTMLDivElement | null>(null);
+  const helpModalRef = useRef<HTMLDivElement | null>(null);
+  const previewModalRef = useRef<HTMLDivElement | null>(null);
 
   const renderThumbnail = useCallback(
     async (pageNumber: number, canvas: HTMLCanvasElement) => {
@@ -287,6 +289,51 @@ function App() {
       paddingBottom: Math.max(0, (totalRows - endRow - 1) * rowStride),
     };
   }, [gridMetrics, rowHeight, state.numPages, state.pdfDoc]);
+
+  useEffect(() => {
+    const activeModal = previewPage !== null ? previewModalRef.current : helpOpen ? helpModalRef.current : null;
+    if (!activeModal) return;
+
+    const getFocusableElements = (): HTMLElement[] => {
+      const elements = activeModal.querySelectorAll<HTMLElement>(
+        "button, [href], input, select, textarea, [tabindex]:not([tabindex='-1'])"
+      );
+      return Array.from(elements).filter((el) => !el.hasAttribute("disabled"));
+    };
+
+    const focusables = getFocusableElements();
+    if (focusables.length > 0) {
+      focusables[0].focus();
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Tab") return;
+      const elements = getFocusableElements();
+      if (elements.length === 0) {
+        event.preventDefault();
+        return;
+      }
+      const first = elements[0];
+      const last = elements[elements.length - 1];
+      const active = document.activeElement as HTMLElement | null;
+
+      if (event.shiftKey) {
+        if (!active || active === first) {
+          event.preventDefault();
+          last.focus();
+        }
+        return;
+      }
+
+      if (!active || active === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [helpOpen, previewPage]);
 
   useEffect(() => {
     if (!state.pdfDoc || state.status !== "ready") {
@@ -814,7 +861,7 @@ function App() {
       {helpOpen && (
         <div className="modal" role="dialog" aria-modal="true" aria-label="ヘルプ">
           <div className="modal__backdrop" onClick={() => setHelpOpen(false)} />
-          <div className="modal__card">
+          <div className="modal__card" ref={helpModalRef}>
             <div className="modal__header">
               <h2>ヘルプ</h2>
               <button type="button" onClick={() => setHelpOpen(false)} aria-label="閉じる">
@@ -841,7 +888,7 @@ function App() {
       {previewPage !== null && (
         <div className="modal" role="dialog" aria-modal="true" aria-label="プレビュー">
           <div className="modal__backdrop" onClick={() => setPreviewPage(null)} />
-          <div className="modal__card modal__card--preview">
+          <div className="modal__card modal__card--preview" ref={previewModalRef}>
             <div className="modal__header">
               <h2>プレビュー p.{previewPage}</h2>
               <button type="button" onClick={() => setPreviewPage(null)} aria-label="閉じる">

@@ -430,4 +430,86 @@ describe("App", () => {
 
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "プレビュー" })).not.toBeInTheDocument());
   });
+
+  it("ヘルプモーダルはTabでフォーカスを閉じ込める", async () => {
+    mockUseViewerState.mockReturnValue(makeViewerHook());
+    render(<App />);
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole("button", { name: "ヘルプを開く" }));
+
+    const closeButton = await screen.findByRole("button", { name: "閉じる" });
+    expect(document.activeElement).toBe(closeButton);
+
+    fireEvent.keyDown(document, { key: "Tab" });
+    expect(document.activeElement).toBe(closeButton);
+
+    fireEvent.keyDown(document, { key: "Tab", shiftKey: true });
+    expect(document.activeElement).toBe(closeButton);
+  });
+
+  it("プレビューモーダルはTabでフォーカスを閉じ込める", async () => {
+    mockUseViewerState.mockReturnValue(
+      makeViewerHook({
+        state: makeState({ status: "ready", numPages: 1, currentPage: 1, pdfDoc: createMockPdfDoc() }),
+      })
+    );
+
+    render(<App />);
+    const user = userEvent.setup();
+    const pageButton = screen.getByRole("button", { name: "ページ 1" });
+
+    await user.dblClick(pageButton);
+    const closeButton = await screen.findByRole("button", { name: "閉じる" });
+    expect(document.activeElement).toBe(closeButton);
+
+    fireEvent.keyDown(document, { key: "Tab" });
+    expect(document.activeElement).toBe(closeButton);
+
+    fireEvent.keyDown(document, { key: "Tab", shiftKey: true });
+    expect(document.activeElement).toBe(closeButton);
+  });
+
+  it("サムネイルは仮想スクロールで必要分のみ描画する", async () => {
+    mockUseViewerState.mockReturnValue(
+      makeViewerHook({
+        state: makeState({ status: "ready", numPages: 200, currentPage: 1, pdfDoc: createMockPdfDoc(200) }),
+      })
+    );
+    const rafSpy = vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => {
+      cb(0);
+      return 0;
+    });
+
+    render(<App />);
+
+    const grid = document.querySelector(".viewer__grid") as HTMLDivElement;
+    Object.defineProperty(grid, "clientWidth", { value: 500, configurable: true });
+    Object.defineProperty(grid, "clientHeight", { value: 520, configurable: true });
+    let scrollTop = 0;
+    Object.defineProperty(grid, "scrollTop", {
+      get: () => scrollTop,
+      set: (value) => {
+        scrollTop = value;
+      },
+      configurable: true,
+    });
+
+    fireEvent.scroll(grid);
+
+    const pageButtons = screen.getAllByRole("button", { name: /ページ \d+/ });
+    expect(pageButtons.length).toBeLessThan(200);
+    expect(pageButtons.length).toBe(12);
+    expect(screen.getByRole("button", { name: "ページ 1" })).toBeInTheDocument();
+
+    grid.scrollTop = 272 * 50;
+    fireEvent.scroll(grid);
+    fireEvent(window, new Event("resize"));
+
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: "ページ 1" })).not.toBeInTheDocument();
+    });
+
+    rafSpy.mockRestore();
+  });
 });
