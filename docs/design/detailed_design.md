@@ -79,8 +79,8 @@
   - `GET /api/health` → 200 `{ status, version }`
   - `POST /api/ocr/orientation`
     - Content-Type: `multipart/form-data` フィールド名 `file`（PNG/JPEG、50MB以内）、または `application/json` `{ imageBase64 }`
-    - Query/Body: `threshold` (0-1, optional; default 0.6)。閾値未達なら rotation を `null` にする。
-    - Response 200: `{ success: true, rotation: 0|90|180|270|null, confidence: number, textSample?: string, processingMs: number }`
+    - Query/Body: `threshold` (0-1, optional)。※現在は使用せず、固定尤度0.6で判定する。
+    - Response 200: `{ success: true, rotation: 0|90|180|270|null, confidence: number, likelihood: number, textSample?: string, processingMs: number }`
     - 400: バリデーションエラー（画像未提供/非対応MIME/Base64不正/閾値不正）
     - 413: ファイルサイズ超過
     - 503: `OCR_ENABLED=false` で機能無効
@@ -95,11 +95,11 @@
 - OCR処理
   - `OCR_ENABLED=false` なら 503 を返す。
 - タイムアウト: `OCR_TIMEOUT_MS`（例:1500ms）で `Promise.race`。504で応答。
-- 優先戦略: ページ番号トークンのスイープ検出。
-  - 0/90/180/270 の各回転で `recognize` し、周辺（余白）にある数字トークンのスコア最大の回転を採用（confidence は比率）。
+- 優先戦略: ページ下端（底辺）1/8領域のページ番号検出。
+  - 短辺/長辺の各辺が底辺になるように 0/90/180/270 で `recognize` し、底辺1/8領域の数字トークン認識精度（Accuracy）最大の回転を採用。
 - 次点戦略: `Tesseract.detect(buffer)` → `orientation_degrees` を 90 度単位に正規化、`orientation_confidence` を返却。
 - `textSample` はベストエフォート（タイムアウトで打ち切り）で、`OCR_TEXT_SAMPLE_ENABLED` / `OCR_TEXT_SAMPLE_TIMEOUT_MS` で制御する。
-- 信頼度 < threshold の場合は `rotation: null` で返す。
+- 尤度 < 0.6 の場合は `rotation: null` で返す。
 - 画像はメモリ上でのみ保持し、保存しない。multer メモリストレージを使用。Base64 とファイルで同じバリデーションを共有。
 - ロギング
   - リクエストID（`x-request-id` が無ければ生成）

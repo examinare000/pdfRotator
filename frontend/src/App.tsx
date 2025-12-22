@@ -14,7 +14,8 @@ import { UploadPanel } from "./components/UploadPanel";
 import "./App.css";
 
 const MAX_FILE_SIZE = 300 * 1024 * 1024; // 300MB
-const DEFAULT_OCR_THRESHOLD = 0.6;
+const OCR_AUTO_SCALE = 0.6;
+const OCR_RETRY_SCALE = 0.45;
 
 type RenderState = "idle" | "rendering" | "error";
 type SelectionMode = "add" | "remove";
@@ -35,13 +36,6 @@ const THUMB_MIN_WIDTH = 140;
 const THUMB_GRID_GAP = 12;
 const THUMB_GRID_PADDING = 14;
 const THUMB_ROW_BUFFER = 2;
-
-const clampThreshold = (value: number): number => {
-  if (Number.isNaN(value)) return 0;
-  if (value < 0) return 0;
-  if (value > 1) return 1;
-  return value;
-};
 
 const isPdfFile = (file: File): boolean => {
   if (file.type === "application/pdf") {
@@ -99,7 +93,6 @@ function App() {
   const [ocrError, setOcrError] = useState<string | null>(null);
   const [ocrLoading, setOcrLoading] = useState(false);
   const [ocrProgress, setOcrProgress] = useState<{ current: number; total: number; page: number } | null>(null);
-  const [ocrThreshold, setOcrThreshold] = useState(DEFAULT_OCR_THRESHOLD);
   const [dragging, setDragging] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [health, setHealth] = useState<HealthInfo | null>(null);
@@ -112,6 +105,7 @@ function App() {
     containerWidth: 0,
   });
   const ocrAbortRef = useRef<AbortController | null>(null);
+  const autoOcrDocRef = useRef<unknown>(null);
   const previewCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const previewRenderQueueRef = useRef<Promise<void>>(Promise.resolve());
   const viewerGridRef = useRef<HTMLDivElement | null>(null);
@@ -581,6 +575,7 @@ function App() {
 
   const handleReset = () => {
     ocrAbortRef.current?.abort();
+    autoOcrDocRef.current = null;
     reset();
     setOriginalBuffer(null);
     setFileName("");
@@ -605,7 +600,7 @@ function App() {
     };
   }, []);
 
-  const handleDetectOrientation = async () => {
+  const handleDetectOrientation = useCallback(async (options: { forceAll?: boolean } = {}) => {
     if (health && !health.ocrEnabled) {
       setOcrError("OCRは無効化されています");
       return;
@@ -622,11 +617,12 @@ function App() {
     const fetcher: typeof fetch = (input, init) =>
       fetch(input, { ...init, signal: abortController.signal });
 
-    const normalizedSelection = normalizeSelectedPages(selectedPages, state.numPages);
-    const targetPages =
-      normalizedSelection.length > 0
-        ? normalizedSelection
-        : Array.from({ length: state.numPages }, (_, index) => index + 1);
+    const normalizedSelection = options.forceAll
+      ? []
+      : normalizeSelectedPages(selectedPages, state.numPages);
+    const targetPages = normalizedSelection.length > 0
+      ? normalizedSelection
+      : Array.from({ length: state.numPages }, (_, index) => index + 1);
     const total = targetPages.length;
 
     setOcrLoading(true);
@@ -650,10 +646,24 @@ function App() {
         });
 
         try {
-          const suggestion = await detectOrientationForPage(state.pdfDoc, pageNumber, {
-            fetcher,
-            threshold: ocrThreshold,
-          });
+          const baseScale = options.forceAll ? OCR_AUTO_SCALE : 1;
+          const detectWithScale = (scale: number) =>
+            detectOrientationForPage(state.pdfDoc, pageNumber, {
+              fetcher,
+              scale,
+            });
+
+          let suggestion: OrientationSuggestion;
+          try {
+            suggestion = await detectWithScale(baseScale);
+          } catch (error) {
+            const message = error instanceof Error ? error.message : "";
+            if (baseScale > OCR_RETRY_SCALE && message.includes("HTTP 504")) {
+              suggestion = await detectWithScale(OCR_RETRY_SCALE);
+            } else {
+              throw error;
+            }
+          }
           setOcrSuggestion(suggestion);
 
           if (suggestion.rotation === null) {
@@ -684,13 +694,28 @@ function App() {
       setOcrLoading(false);
       setOcrProgress(null);
     }
-  };
+  }, [health, rotatePage, selectedPages, state.numPages, state.pdfDoc, state.rotationMap]);
+
+  useEffect(() => {
+    if (!state.pdfDoc || state.status !== "ready") {
+      autoOcrDocRef.current = null;
+      return;
+    }
+    if (health?.ocrEnabled !== true) {
+      return;
+    }
+    if (autoOcrDocRef.current === state.pdfDoc) {
+      return;
+    }
+    autoOcrDocRef.current = state.pdfDoc;
+    void handleDetectOrientation({ forceAll: true });
+  }, [handleDetectOrientation, health?.ocrEnabled, state.pdfDoc, state.status]);
 
   const suggestionText =
     ocrSuggestion && state.pdfDoc
       ? ocrSuggestion.rotation === null
         ? "向きを特定できませんでした"
-        : `${ocrSuggestion.rotation}° / 信頼度 ${ocrSuggestion.confidence.toFixed(2)}`
+        : `${ocrSuggestion.rotation}° / 尤度 ${(ocrSuggestion.likelihood ?? ocrSuggestion.confidence).toFixed(2)}`
       : "未推定";
 
   const toastText = ocrError ?? message;
@@ -739,7 +764,7 @@ function App() {
                       <button
                         type="button"
                         key={pageNumber}
-                        className={`thumb-card${isSelected ? " is-selected" : ""}`}
+                        className={`thumb-card${isSelected ? " is-selected" : ""}${rotation !== 0 ? " is-rotated" : ""}`}
                         aria-pressed={isSelected}
                         aria-label={`ページ ${pageNumber}`}
                         disabled={state.status !== "ready"}
@@ -801,24 +826,6 @@ function App() {
           <section className="panel controls">
             <div className="controls__group">
               <p className="label">OCR向き推定</p>
-              <div className="threshold-row">
-                <label className="threshold-label">
-                  しきい値
-                  <input
-                    className="number-input"
-                    type="number"
-                    inputMode="decimal"
-                    min={0}
-                    max={1}
-                    step={0.05}
-                    value={ocrThreshold}
-                    onChange={(event) => setOcrThreshold(clampThreshold(Number(event.target.value)))}
-                    disabled={state.status !== "ready"}
-                    aria-label="OCR信頼度しきい値"
-                  />
-                </label>
-                <span className="threshold-value">{Math.round(ocrThreshold * 100)}%</span>
-              </div>
               <div className="button-row">
                 <button
                   onClick={handleDetectOrientation}
@@ -844,7 +851,7 @@ function App() {
                   <p className="hint">OCRが無効化されています（`OCR_ENABLED=false`）。</p>
                 ) : (
                   <p className="hint">
-                    選択ページがある場合はそのページを順番に画像化し、なければ全ページを対象にサーバーで向きを推定して自動適用します（しきい値 {ocrThreshold}）。
+                    PDF読み込み時に全ページを自動推定し、必要なら回転を適用します。手動実行時は選択ページがあればそのページを順番に画像化し、なければ全ページを対象にサーバーで向きを推定して自動適用します。
                   </p>
                 )}
                 {ocrSuggestion && <p className="hint">推定対象ページ: {ocrSuggestion.page}</p>}
@@ -891,7 +898,7 @@ function App() {
             </div>
             <div className="modal__body">
               <p className="hint">
-                PDFはブラウザ内で処理します。OCR実行時のみ、選択ページ（未選択なら全ページ）の画像をサーバへ送信します。
+                PDFはブラウザ内で処理します。PDF読み込み時の自動OCRと手動実行時のみ、ページ画像をサーバへ送信します。
               </p>
               <p className="label">ショートカット</p>
               <ul className="help-list">

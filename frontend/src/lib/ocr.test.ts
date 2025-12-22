@@ -106,7 +106,6 @@ describe("detectOrientationFromPage", () => {
 
     const result = await detectOrientationFromPage({
       page,
-      threshold: 0.9,
       render: renderMock,
       createCanvas: () => canvas,
       request: requestMock,
@@ -117,7 +116,7 @@ describe("detectOrientationFromPage", () => {
     expect(renderMock).toHaveBeenCalledWith(page, canvas, { scale: 1, rotation: 0 });
     expect(requestMock).toHaveBeenCalledWith({
       imageBase64: "data:image/png;base64,ABC",
-      threshold: 0.9,
+      threshold: undefined,
     });
     expect(result.suggestion.rotation).toBe(0);
     expect(result.suggestion.confidence).toBeCloseTo(0.95);

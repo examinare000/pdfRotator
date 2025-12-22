@@ -6,6 +6,7 @@ export type OrientationResponse = {
   success: true;
   rotation: Orientation;
   confidence: number;
+  likelihood?: number;
   processingMs: number;
   textSample?: string;
 };
@@ -40,7 +41,7 @@ export type DetectOrientationParams = {
   rotation?: number;
   createCanvas?: () => HTMLCanvasElement;
   render?: RenderPageToPngOptions["render"];
-  request?: (payload: { imageBase64: string; threshold: number }) => Promise<OrientationResponse>;
+  request?: (payload: { imageBase64: string; threshold?: number }) => Promise<OrientationResponse>;
 };
 
 export type DetectOrientationForPageOptions = OrientationRequestOptions & {
@@ -48,7 +49,6 @@ export type DetectOrientationForPageOptions = OrientationRequestOptions & {
   rotation?: number;
 };
 
-const DEFAULT_THRESHOLD = 0.6;
 const DEFAULT_ENDPOINT = "/api/ocr/orientation";
 
 const safeReadJson = async (res: unknown): Promise<unknown | null> => {
@@ -89,15 +89,18 @@ export const requestOrientation = async (
   options: OrientationRequestOptions = {}
 ): Promise<OrientationResponse> => {
   const fetcher = options.fetcher ?? fetch;
-  const threshold = options.threshold ?? DEFAULT_THRESHOLD;
   const endpoint = options.endpoint ?? DEFAULT_ENDPOINT;
+  const payload: { imageBase64: string; threshold?: number } = { imageBase64 };
+  if (typeof options.threshold === "number" && Number.isFinite(options.threshold)) {
+    payload.threshold = options.threshold;
+  }
 
   let res: Response;
   try {
     res = await fetcher(endpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ imageBase64, threshold }),
+      body: JSON.stringify(payload),
     });
   } catch (error) {
     throw new Error("OCRのリクエストに失敗しました: ネットワークエラー", { cause: error });
@@ -126,7 +129,7 @@ export const detectOrientationFromPage = async (
 ): Promise<{ suggestion: OrientationResponse; imageBase64: string; viewport: { width: number; height: number } }> => {
   const {
     page,
-    threshold = DEFAULT_THRESHOLD,
+    threshold,
     scale = 1,
     rotation = 0,
     createCanvas,

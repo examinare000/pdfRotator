@@ -4,7 +4,7 @@ import { createTesseractDetector } from "../src/services/orientation";
 const baseBuffer = Buffer.from("image");
 
 describe("createTesseractDetector", () => {
-  it("外周のページ番号が最も多い回転を返し、信頼度を比率で計算する", async () => {
+  it("底辺1/8領域のページ番号認識精度が最も高い回転を返す", async () => {
     const rotate = vi.fn(async (_buffer: Buffer, degrees: number) => Buffer.from(`rot-${degrees}`));
     const recognize = vi.fn(async (buffer: Buffer) => {
       const asString = buffer.toString();
@@ -14,7 +14,7 @@ describe("createTesseractDetector", () => {
             imageSize: { width: 1000, height: 1000 },
             words: [
               { text: "HEADER", confidence: 95, bbox: { x0: 200, y0: 200, x1: 300, y1: 230 } },
-              { text: "1", confidence: 95, bbox: { x0: 450, y0: 970, x1: 470, y1: 990 } },
+              { text: "1", confidence: 70, bbox: { x0: 450, y0: 970, x1: 470, y1: 990 } },
             ],
           },
         };
@@ -23,7 +23,7 @@ describe("createTesseractDetector", () => {
         return {
           data: {
             imageSize: { width: 1000, height: 1000 },
-            words: [{ text: "12", confidence: 92, bbox: { x0: 5, y0: 500, x1: 25, y1: 520 } }],
+            words: [{ text: "12", confidence: 92, bbox: { x0: 5, y0: 930, x1: 25, y1: 960 } }],
           },
         };
       }
@@ -38,7 +38,7 @@ describe("createTesseractDetector", () => {
       return {
         data: {
           imageSize: { width: 1000, height: 1000 },
-          words: [{ text: "3", confidence: 40, bbox: { x0: 5, y0: 5, x1: 25, y1: 25 } }],
+          words: [{ text: "3", confidence: 65, bbox: { x0: 5, y0: 5, x1: 25, y1: 25 } }],
         },
       };
     });
@@ -47,12 +47,12 @@ describe("createTesseractDetector", () => {
     const result = await detector.detect({ buffer: baseBuffer });
 
     expect(result.rotation).toBe(90);
-    expect(result.confidence).toBeCloseTo(2 / 3);
+    expect(result.confidence).toBeCloseTo(0.92);
     expect(rotate).toHaveBeenCalledTimes(4);
     expect(recognize).toHaveBeenCalledTimes(4);
   });
 
-  it("外周にページ番号が無い場合は rotation=null を返す", async () => {
+  it("底辺1/8領域にページ番号が無い場合は rotation=null を返す", async () => {
     const rotate = vi.fn(async (_buffer: Buffer, degrees: number) => Buffer.from(`rot-${degrees}`));
     const recognize = vi.fn(async () => ({
       data: {
