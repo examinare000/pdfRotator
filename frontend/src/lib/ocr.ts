@@ -80,7 +80,28 @@ export const renderPageToPng = async (
     rotation: options.rotation,
   });
 
-  const dataUrl = canvas.toDataURL("image/png");
+  const dataUrl = await new Promise<string>((resolve, reject) => {
+    if (typeof canvas.toBlob === "function") {
+      canvas.toBlob((blob) => {
+        if (!blob) {
+          resolve(canvas.toDataURL("image/png"));
+          return;
+        }
+        const reader = new FileReader();
+        reader.onerror = () => reject(new Error("画像の変換に失敗しました"));
+        reader.onload = () => {
+          if (typeof reader.result === "string") {
+            resolve(reader.result);
+            return;
+          }
+          reject(new Error("画像の変換に失敗しました"));
+        };
+        reader.readAsDataURL(blob);
+      }, "image/png");
+      return;
+    }
+    resolve(canvas.toDataURL("image/png"));
+  });
   return { dataUrl, viewport };
 };
 

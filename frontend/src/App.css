@@ -474,6 +474,30 @@ h1 {
   margin-top: var(--space-sm);
 }
 
+.toggle-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  margin-top: var(--space-sm);
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.toggle-row input {
+  accent-color: var(--accent-strong);
+}
+
+.toggle-row__field {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+}
+
+.number-input--compact {
+  width: 64px;
+  padding: calc(var(--space-xs) + 1px) var(--space-sm);
+}
+
 /* ==========================================================================
    Buttons — Minimal Style
    ========================================================================== */

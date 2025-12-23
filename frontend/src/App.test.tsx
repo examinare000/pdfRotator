@@ -362,6 +362,151 @@ describe("App", () => {
     expect(viewerHook.rotatePage).toHaveBeenCalledWith(4, 90);
   });
 
+  it("複数ページ推定が完了すると完了メッセージを表示する", async () => {
+    mockUseViewerState.mockReturnValue(
+      makeViewerHook({
+        state: makeState({ status: "ready", numPages: 2, currentPage: 1, pdfDoc: createMockPdfDoc(2) }),
+      })
+    );
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByText("2ページの向き推定が完了しました")).toBeInTheDocument();
+    });
+  });
+
+  it("処理中止すると再開ボタンが有効になる", async () => {
+    const viewerHook = makeViewerHook({
+      state: makeState({ status: "ready", numPages: 2, currentPage: 1, pdfDoc: createMockPdfDoc(2) }),
+    });
+    mockUseViewerState.mockReturnValue(viewerHook);
+
+    render(<App />);
+    const user = userEvent.setup();
+    await waitForAutoOcr(2);
+
+    let resolveFirst: (value: unknown) => void = () => {};
+    const firstPromise = new Promise((resolve) => {
+      resolveFirst = resolve;
+    });
+    mockDetectOrientationForPage.mockImplementationOnce(() => firstPromise);
+
+    await user.click(screen.getByRole("button", { name: "向き推定" }));
+
+    expect(await screen.findByRole("button", { name: "処理中止" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "処理中止" }));
+
+    resolveFirst({
+      page: 1,
+      rotation: null,
+      confidence: 0,
+      processingMs: 1,
+      success: true,
+      viewport: { width: 100, height: 100 },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "処理再開" })).toBeEnabled();
+    });
+  });
+
+  it("連続回転が有効な場合は同方向の高尤度ページに挟まれたページも回転する", async () => {
+    const viewerHook = makeViewerHook({
+      state: makeState({ status: "ready", numPages: 3, currentPage: 1, pdfDoc: createMockPdfDoc(3) }),
+    });
+    mockUseViewerState.mockReturnValue(viewerHook);
+
+    render(<App />);
+    const user = userEvent.setup();
+    await waitForAutoOcr(3);
+
+    viewerHook.rotatePage.mockClear();
+    mockDetectOrientationForPage
+      .mockResolvedValueOnce({
+        page: 1,
+        rotation: 90,
+        confidence: 0.95,
+        processingMs: 12,
+        success: true,
+        viewport: { width: 100, height: 100 },
+      })
+      .mockResolvedValueOnce({
+        page: 2,
+        rotation: null,
+        confidence: 0,
+        processingMs: 10,
+        success: true,
+        viewport: { width: 100, height: 100 },
+      })
+      .mockResolvedValueOnce({
+        page: 3,
+        rotation: 90,
+        confidence: 0.95,
+        processingMs: 8,
+        success: true,
+        viewport: { width: 100, height: 100 },
+      });
+
+    await user.click(screen.getByRole("checkbox", { name: /連続回転/ }));
+    await user.click(screen.getByRole("button", { name: "向き推定" }));
+
+    await waitFor(() => expect(mockDetectOrientationForPage).toHaveBeenCalledTimes(3));
+    expect(viewerHook.rotatePage).toHaveBeenCalledWith(2, 90);
+  });
+
+  it("連続回転の間に別方向の高尤度ページがある場合は回転しない", async () => {
+    const viewerHook = makeViewerHook({
+      state: makeState({ status: "ready", numPages: 4, currentPage: 1, pdfDoc: createMockPdfDoc(4) }),
+    });
+    mockUseViewerState.mockReturnValue(viewerHook);
+
+    render(<App />);
+    const user = userEvent.setup();
+    await waitForAutoOcr(4);
+
+    viewerHook.rotatePage.mockClear();
+    mockDetectOrientationForPage
+      .mockResolvedValueOnce({
+        page: 1,
+        rotation: 90,
+        confidence: 0.95,
+        processingMs: 12,
+        success: true,
+        viewport: { width: 100, height: 100 },
+      })
+      .mockResolvedValueOnce({
+        page: 2,
+        rotation: 180,
+        confidence: 0.95,
+        processingMs: 10,
+        success: true,
+        viewport: { width: 100, height: 100 },
+      })
+      .mockResolvedValueOnce({
+        page: 3,
+        rotation: null,
+        confidence: 0,
+        processingMs: 8,
+        success: true,
+        viewport: { width: 100, height: 100 },
+      })
+      .mockResolvedValueOnce({
+        page: 4,
+        rotation: 90,
+        confidence: 0.95,
+        processingMs: 8,
+        success: true,
+        viewport: { width: 100, height: 100 },
+      });
+
+    await user.click(screen.getByRole("checkbox", { name: /連続回転/ }));
+    await user.click(screen.getByRole("button", { name: "向き推定" }));
+
+    await waitFor(() => expect(mockDetectOrientationForPage).toHaveBeenCalledTimes(4));
+    expect(viewerHook.rotatePage).not.toHaveBeenCalledWith(3, 90);
+  });
+
   it("Ctrl+左右で選択ページを回転する", async () => {
     const viewerHook = makeViewerHook({
       state: makeState({ status: "ready", numPages: 3, currentPage: 1, pdfDoc: createMockPdfDoc(3) }),
@@ -557,6 +702,28 @@ describe("App", () => {
     await user.click(screen.getByRole("button", { name: "閉じる" }));
 
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "プレビュー" })).not.toBeInTheDocument());
+  });
+
+  it("プレビュー上でPDFをドロップすると読み込みできる", async () => {
+    const loadFromArrayBuffer = vi.fn(async () => {});
+    mockUseViewerState.mockReturnValue(
+      makeViewerHook({
+        loadFromArrayBuffer,
+        state: makeState({ status: "ready", numPages: 1, currentPage: 1, pdfDoc: createMockPdfDoc() }),
+      })
+    );
+
+    render(<App />);
+    const user = userEvent.setup();
+    const pageButton = screen.getByRole("button", { name: "ページ 1" });
+
+    await user.dblClick(pageButton);
+    const preview = await screen.findByRole("dialog", { name: "プレビュー" });
+
+    const file = new File([new Uint8Array([1, 2, 3])], "sample.pdf", { type: "application/pdf" });
+    fireEvent.drop(preview, { dataTransfer: { files: [file] } });
+
+    await waitFor(() => expect(loadFromArrayBuffer).toHaveBeenCalledTimes(1));
   });
 
   it("ヘルプモーダルはTabでフォーカスを閉じ込める", async () => {
