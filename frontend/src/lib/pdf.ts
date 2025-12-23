@@ -29,16 +29,8 @@ export type LoadOptions = {
   baseUrl?: string;
 };
 
-export const resolveWorkerSrc = (baseUrl?: string): string => {
-  const base =
-    baseUrl ??
-    (import.meta as unknown as { env?: { BASE_URL?: string } }).env?.BASE_URL ??
-    "/";
-  const normalizedBase = base === "" ? "/" : base;
-  const trimmed = normalizedBase.endsWith("/") ? normalizedBase.slice(0, -1) : normalizedBase;
-  const safeBase = trimmed === "" ? "/" : trimmed;
-  return safeBase === "/" ? "/pdf.worker.js" : `${safeBase}/pdf.worker.js`;
-};
+export const resolveWorkerSrc = (): string =>
+  new URL("pdfjs-dist/build/pdf.worker.min.mjs", import.meta.url).toString();
 
 export const createPdfLoader = (pdfjs: PdfJsLike) => {
   return {
@@ -47,7 +39,7 @@ export const createPdfLoader = (pdfjs: PdfJsLike) => {
         throw new Error("PDFデータが空です");
       }
 
-      const workerSrc = options?.workerSrc ?? resolveWorkerSrc(options?.baseUrl);
+      const workerSrc = options?.workerSrc ?? resolveWorkerSrc();
       if (pdfjs.GlobalWorkerOptions) {
         pdfjs.GlobalWorkerOptions.workerSrc = workerSrc;
       }

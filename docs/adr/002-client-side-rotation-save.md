@@ -10,7 +10,7 @@
 
 ## 決定
 - PDFの表示・回転・保存はすべてフロントエンドで行う。
-  - レンダリングは PDF.js（`GlobalWorkerOptions.workerSrc` を `public/pdf.worker.js` に設定）。
+  - レンダリングは PDF.js（`GlobalWorkerOptions.workerSrc` は `pdfjs-dist/build/pdf.worker.min.mjs` を利用）。
   - 回転適用と保存は pdf-lib を用い、ページごとの回転マップを `0|90|180|270` の90度単位で保持する。
   - 保存時に回転マップを全ページへ適用し、`rotated.pdf` を Blob として生成して自動ダウンロード（モバイルSafariは Blob URL を新規タブで開くフォールバック）。
   - PDFファイルは ArrayBuffer としてブラウザメモリ上のみで扱い、サーバへアップロードしない。

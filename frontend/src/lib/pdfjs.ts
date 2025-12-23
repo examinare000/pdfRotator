@@ -1,4 +1,4 @@
-import { createPdfLoader, type PdfDocumentProxy, type PdfJsLike, type PdfLoader } from "./pdf";
+import { createPdfLoader, resolveWorkerSrc, type PdfDocumentProxy, type PdfJsLike, type PdfLoader } from "./pdf";
 
 export type PdfJsDistOptions = {
   workerSrc?: string;
@@ -17,6 +17,9 @@ const loadPdfJsDist = async (): Promise<PdfJsDistModule> => {
 
 export const createPdfJsDistLoader = (options: PdfJsDistOptions = {}): PdfLoader => {
   let loaderPromise: Promise<PdfLoader> | null = null;
+  const resolvedOptions: PdfJsDistOptions = {
+    workerSrc: options.workerSrc ?? resolveWorkerSrc(),
+  };
 
   const getLoader = async () => {
     if (!loaderPromise) {
@@ -34,7 +37,7 @@ export const createPdfJsDistLoader = (options: PdfJsDistOptions = {}): PdfLoader
 
   return {
     loadFromArrayBuffer: async (buffer, extraOptions) => {
-      const workerSrc = extraOptions?.workerSrc ?? options.workerSrc;
+      const workerSrc = extraOptions?.workerSrc ?? resolvedOptions.workerSrc;
       const loader = await getLoader();
       return loader.loadFromArrayBuffer(buffer, { workerSrc });
     },

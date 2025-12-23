@@ -33,6 +33,17 @@ describe("createPdfJsDistLoader", () => {
     expect(pdfjsMocks.pdfjsMockFactory).toHaveBeenCalledTimes(1);
   });
 
+  it("workerSrcを指定しない場合はpdfjs-dist付属workerを使う", async () => {
+    const createPdfJsDistLoader = await loadPdfJsDistLoader();
+    const loader = createPdfJsDistLoader();
+    const buffer = new Uint8Array([1, 2]).buffer;
+
+    await loader.loadFromArrayBuffer(buffer);
+    const pdfjsDist = await importPdfjsDist();
+
+    expect(pdfjsDist.GlobalWorkerOptions.workerSrc).toMatch(/pdf\.worker\.min\.mjs$/);
+  });
+
   it("workerSrcを設定して読み込める", async () => {
     const createPdfJsDistLoader = await loadPdfJsDistLoader();
     const loader = createPdfJsDistLoader({ workerSrc: "/pdf.worker.js" });

@@ -62,7 +62,7 @@
 ## 2025-12-16 追記（実装完了と挙動）
 - バックエンド: 50MB 上限に拡張し、Base64/ファイル双方に再利用するバリデーションを追加。`textSample` を返却し、Tesseract.detect が失敗した場合は4方向スイープでフォールバックする。
 - フロントエンド: `OrientationPanel` を実装し、PDFページを `renderPageToCanvas` 経由でPNG化して本エンドポイントへ送信。しきい値入力、信頼度表示、推定結果の自動適用を提供し、UIテストを追加。
-- フロント実装は `pdf.worker.js` を `public/` に配置し、`resolveWorkerSrc` で `BASE_URL` に追従。Vitest + Testing Library のセットアップを追加。
+- フロント実装は `pdfjs-dist/build/pdf.worker.min.mjs` を利用し、Viteのアセット解決結果を `GlobalWorkerOptions.workerSrc` に設定。Vitest + Testing Library のセットアップを追加。
 
 ## 2025-12-19 追記（ページ番号スイープの導入）
 - バックエンド: ページ周辺の数字トークン（ページ番号）を使ったスイープ検出を優先し、0/90/180/270 の各回転で `recognize` を実行してスコア最大の回転を採用する。スコアが得られない場合は `Tesseract.detect` にフォールバック。※2025-12-22 追記で底辺1/8方式に更新。

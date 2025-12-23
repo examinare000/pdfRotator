@@ -3,12 +3,11 @@
 React/Vite 製の PDF ビューワ & 回転ツールと、OCR でページ向きを推定する Express API のモノレポです。ページ単位の回転を保存しつつ、矢印キー操作と OCR レコメンドで素早く整形できます。
 
 ## 配布版（Windows）のダウンロード
-- GitHub Releases（最新版）: https://github.com/examinare000/pdfRotator/releases/latest
-  - Assets から `pdfrotator-win64.zip` をダウンロードしてください。
+  - `pdfrotator-win64.zip` をダウンロードしてください。
 
 ## 主な機能
 - PDF をブラウザ上で表示し、ページ単位で ±90° 回転・ズーム・ページ移動
-- ↑↓ と →(＋90°) / ←(−90°) のショートカット、Ctrl/Cmd+S で保存
+- ↑↓ (＋180°)と →(＋90°) / ←(−90°) のショートカット、Ctrl/Cmd+S で保存
 - 現在ページを画像化して `/api/ocr/orientation` に送り、向きと信頼度を表示・適用
 - 複数ページのOCR向き推定、進捗表示、中止/再開、連続回転（高尤度の同方向判定に挟まれたページを一括回転）
 - 拡大プレビュー表示中もPDFをドラッグ&ドロップで再読み込み可能
@@ -16,7 +15,7 @@ React/Vite 製の PDF ビューワ & 回転ツールと、OCR でページ向き
 - PDF 本体はブラウザ内のみで処理し、OCR 時のみ対象ページの画像を送信
 
 ## ディレクトリ構成
-- `frontend/` : React + TypeScript + Vite。`public/pdf.worker.js` に PDF.js worker を配置。
+- `frontend/` : React + TypeScript + Vite。PDF.js worker は `pdfjs-dist/build/pdf.worker.min.mjs` を利用。
 - `server/` : Express + TypeScript。OCR API と静的配信（ビルド成果物を `public/` へ）。
 - `docs/` : 設計/ADR。詳細は `docs/design/detailed_design.md` を参照。
 - `scripts/` : 配布用 PowerShell スクリプト `package-win.ps1`。
