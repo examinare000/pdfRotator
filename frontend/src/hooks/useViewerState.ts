@@ -9,6 +9,7 @@ export type ViewerState = {
   pdfDoc: PdfDocumentProxy | null;
   numPages: number;
   currentPage: number;
+  selectedPages: number[];
   rotationMap: PageRotationMap;
   zoom: number;
   errorMessage: string | null;
@@ -21,6 +22,7 @@ export type ViewerControls = {
   nextPage: () => void;
   prevPage: () => void;
   rotateCurrentPage: (delta: number) => void;
+  rotatePage: (pageNumber: number, delta: number) => void;
   setZoom: (zoom: number) => void;
   reset: () => void;
 };
@@ -34,6 +36,7 @@ const INITIAL_STATE: ViewerState = {
   pdfDoc: null,
   numPages: 0,
   currentPage: 1,
+  selectedPages: [],
   rotationMap: {},
   zoom: 1,
   errorMessage: null,
@@ -66,6 +69,7 @@ export const useViewerState = (
       pdfDoc: doc,
       numPages: doc.numPages,
       currentPage: 1,
+      selectedPages: [],
       rotationMap: {},
       zoom: 1,
       errorMessage: null,
@@ -91,6 +95,7 @@ export const useViewerState = (
           pdfDoc: null,
           numPages: 0,
           currentPage: 1,
+          selectedPages: [],
           rotationMap: {},
         }));
       }
@@ -127,6 +132,15 @@ export const useViewerState = (
     });
   }, []);
 
+  const rotatePage = useCallback((pageNumber: number, delta: number) => {
+    setState((prev) => {
+      if (prev.status !== "ready") return prev;
+      const targetPage = clampPageNumber(pageNumber, prev.numPages);
+      const nextRotationMap = applyRotationChange(prev.rotationMap, targetPage, delta);
+      return { ...prev, rotationMap: nextRotationMap };
+    });
+  }, []);
+
   const setZoom = useCallback((zoom: number) => {
     setState((prev) => ({ ...prev, zoom: clampZoom(zoom) }));
   }, []);
@@ -143,6 +157,7 @@ export const useViewerState = (
     nextPage,
     prevPage,
     rotateCurrentPage,
+    rotatePage,
     setZoom,
     reset,
   };

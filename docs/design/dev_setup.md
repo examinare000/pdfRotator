@@ -4,22 +4,28 @@
 - Node.js 24 LTS を winget でインストール済み。新しいターミナルで `node -v` / `npm -v` が通ることを確認。
   - もし既存シェルで認識されない場合は、一度シェルを開き直すか `setx PATH "%ProgramFiles%\\nodejs;%PATH%"` を実行。
 
+## ルートから一括（推奨）
+- セットアップ（frontend + server）: `npm run setup`
+- テスト（frontend + server）: `npm test`
+- ビルド（frontend + server）: `npm run build`
+- 開発起動（frontend + server 同時起動）: `npm run dev`
+
 ## フロントエンド（React + Vite + TypeScript）
 - ディレクトリ: `frontend/`
-- セットアップ: `cd frontend && npm install`
+- セットアップ: `cd frontend && npm ci`
 - 開発サーバ: `npm run dev`（デフォルト `http://localhost:5173`）
 - ビルド: `npm run build`
 - プレビュー: `npm run preview`
 
 ## バックエンド（Express + TypeScript）
 - ディレクトリ: `server/`
-- セットアップ: `cd server && npm install`
+- セットアップ: `cd server && npm ci`
 - 環境変数サンプル: `server/.env.example` をコピーして `.env` を作成。
 - 開発サーバ: `npm run dev`（デフォルト `http://localhost:3001`）
 - ビルド: `npm run build`（成果物は `server/dist`）
 - 本番起動: `npm start`
 - API（暫定）
-  - `GET /api/health` … ヘルスチェック
+  - `GET /api/health` … ヘルスチェック（`ocrEnabled` を含む）
   - `POST /api/ocr/orientation` … OCR向き判定（Tesseract.js実装済み）
 
 ## リポジトリ構成（現状）
@@ -30,7 +36,8 @@
 ## 配布パッケージ作成（Windows向け）
 - コマンド: `cd server && npm run package:win`
 - 生成物: `release/pdfrotator-win64.zip`（解凍後に同梱の `start.cmd` を実行するだけ）
-- オプション: `pwsh ../scripts/package-win.ps1 -IncludeNode` で node.exe を同梱（配布先に Node 不要）
+- 既定: `node.exe` を同梱（配布先に Node.js 不要）
+- オプション: `pwsh ../scripts/package-win.ps1 -NoNode` で node.exe を同梱しない（配布先に Node.js が必要）
 
 ## 次にやること（提案）
 1. フロントで PDF.js / pdf-lib を組み込み、回転UIとショートカットを実装。

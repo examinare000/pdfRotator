@@ -1,5 +1,4 @@
 import { saveAs } from "file-saver";
-import { PDFDocument, degrees } from "pdf-lib";
 import type { PageRotationMap } from "./rotation";
 
 export type SaveOptions = {
@@ -20,6 +19,7 @@ export const savePdfWithRotation = async (
     throw new Error("保存するPDFデータが空です");
   }
 
+  const { PDFDocument, degrees } = await import("pdf-lib");
   const pdfDoc = await PDFDocument.load(originalBuffer);
   const pages = pdfDoc.getPages();
 

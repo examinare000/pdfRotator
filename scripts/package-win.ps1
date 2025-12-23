@@ -1,8 +1,10 @@
 # 目的: Windows向けの配布パッケージ(zip)を生成する
-# 前提: Node 24系がインストール済みで PowerShell 実行ポリシーが許可されていること
+# 前提: パッケージ生成マシンに Node 24系がインストール済みで PowerShell 実行ポリシーが許可されていること
 
 param(
-  [switch] $IncludeNode  # 同梱したい場合に node.exe をコピーする
+  [switch] $NoNode, # 配布物に node.exe を同梱しない（配布先で Node.js が必要）
+  [switch] $IncludeNode, # 互換用: 旧オプション（指定してもしなくても同梱が既定）
+  [string] $NodeExePath # 取り込みたい node.exe のパス（未指定時は PATH から探索）
 )
 
 $ErrorActionPreference = "Stop"
@@ -15,6 +17,32 @@ function Assert-LastExitCode([string] $step) {
   if ($LASTEXITCODE -ne 0) {
     throw "コマンドが失敗しました: $step (exit=$LASTEXITCODE)"
   }
+}
+
+function Resolve-NodeExePath() {
+  param(
+    [string] $ExplicitPath
+  )
+
+  if ($ExplicitPath) {
+    $resolved = Resolve-Path $ExplicitPath -ErrorAction Stop | Select-Object -ExpandProperty Path
+    if (-not (Test-Path $resolved)) {
+      throw "node.exe が見つかりませんでした: $resolved"
+    }
+    return $resolved
+  }
+
+  $nodeCmd = Get-Command node -ErrorAction SilentlyContinue
+  if ($nodeCmd -and $nodeCmd.Source -and (Test-Path $nodeCmd.Source)) {
+    return $nodeCmd.Source
+  }
+
+  $defaultNodeExe = "C:\\Program Files\\nodejs\\node.exe"
+  if (Test-Path $defaultNodeExe) {
+    return $defaultNodeExe
+  }
+
+  return $null
 }
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -73,14 +101,15 @@ npm ci --omit=dev
 Assert-LastExitCode "[package] npm ci --omit=dev"
 Pop-Location
 
-# node.exe 同梱オプション
-if ($IncludeNode) {
-  $nodeExe = "C:\Program Files\nodejs\node.exe"
-  if (Test-Path $nodeExe) {
-    Write-Host "[package] node.exe を同梱します" -ForegroundColor Green
-    Copy-Item $nodeExe $packageDir
+# node.exe は既定で同梱する（配布先で Node.js の別途インストールを不要にする）
+$shouldIncludeNode = $IncludeNode -or (-not $NoNode)
+if ($shouldIncludeNode) {
+  $nodeExe = Resolve-NodeExePath -ExplicitPath $NodeExePath
+  if ($nodeExe) {
+    Write-Host "[package] node.exe を同梱します: $nodeExe" -ForegroundColor Green
+    Copy-Item $nodeExe $packageDir -Force
   } else {
-    Write-Warning "node.exe が見つかりませんでした: $nodeExe"
+    Write-Warning "node.exe が見つかりませんでした（-NodeExePath で明示してください）"
   }
 }
 

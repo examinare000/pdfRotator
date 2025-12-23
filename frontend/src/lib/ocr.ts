@@ -6,6 +6,7 @@ export type OrientationResponse = {
   success: true;
   rotation: Orientation;
   confidence: number;
+  likelihood?: number;
   processingMs: number;
   textSample?: string;
 };
@@ -40,7 +41,7 @@ export type DetectOrientationParams = {
   rotation?: number;
   createCanvas?: () => HTMLCanvasElement;
   render?: RenderPageToPngOptions["render"];
-  request?: (payload: { imageBase64: string; threshold: number }) => Promise<OrientationResponse>;
+  request?: (payload: { imageBase64: string; threshold?: number }) => Promise<OrientationResponse>;
 };
 
 export type DetectOrientationForPageOptions = OrientationRequestOptions & {
@@ -48,8 +49,24 @@ export type DetectOrientationForPageOptions = OrientationRequestOptions & {
   rotation?: number;
 };
 
-const DEFAULT_THRESHOLD = 0.6;
 const DEFAULT_ENDPOINT = "/api/ocr/orientation";
+
+const safeReadJson = async (res: unknown): Promise<unknown | null> => {
+  if (!res || typeof res !== "object") {
+    return null;
+  }
+
+  const maybeResponse = res as { json?: () => Promise<unknown> };
+  if (typeof maybeResponse.json === "function") {
+    try {
+      return await maybeResponse.json();
+    } catch {
+      return null;
+    }
+  }
+
+  return null;
+};
 
 export const renderPageToPng = async (
   page: PdfPageProxy,
@@ -63,7 +80,28 @@ export const renderPageToPng = async (
     rotation: options.rotation,
   });
 
-  const dataUrl = canvas.toDataURL("image/png");
+  const dataUrl = await new Promise<string>((resolve, reject) => {
+    if (typeof canvas.toBlob === "function") {
+      canvas.toBlob((blob) => {
+        if (!blob) {
+          resolve(canvas.toDataURL("image/png"));
+          return;
+        }
+        const reader = new FileReader();
+        reader.onerror = () => reject(new Error("画像の変換に失敗しました"));
+        reader.onload = () => {
+          if (typeof reader.result === "string") {
+            resolve(reader.result);
+            return;
+          }
+          reject(new Error("画像の変換に失敗しました"));
+        };
+        reader.readAsDataURL(blob);
+      }, "image/png");
+      return;
+    }
+    resolve(canvas.toDataURL("image/png"));
+  });
   return { dataUrl, viewport };
 };
 
@@ -72,22 +110,34 @@ export const requestOrientation = async (
   options: OrientationRequestOptions = {}
 ): Promise<OrientationResponse> => {
   const fetcher = options.fetcher ?? fetch;
-  const threshold = options.threshold ?? DEFAULT_THRESHOLD;
   const endpoint = options.endpoint ?? DEFAULT_ENDPOINT;
+  const payload: { imageBase64: string; threshold?: number } = { imageBase64 };
+  if (typeof options.threshold === "number" && Number.isFinite(options.threshold)) {
+    payload.threshold = options.threshold;
+  }
 
-  const res = await fetcher(endpoint, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ imageBase64, threshold }),
-  });
+  let res: Response;
+  try {
+    res = await fetcher(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+  } catch (error) {
+    throw new Error("OCRのリクエストに失敗しました: ネットワークエラー", { cause: error });
+  }
 
-  const data = res?.ok ? await res.json() : null;
+  const data = await safeReadJson(res);
 
-  if (!res?.ok || !data?.success) {
-    const fallback = "OCRのリクエストに失敗しました";
+  const dataRecord = data && typeof data === "object" ? (data as Record<string, unknown>) : null;
+
+  if (!res?.ok || !dataRecord?.success) {
+    const httpStatus =
+      typeof res?.status === "number" && res.status > 0 ? ` (HTTP ${res.status})` : "";
+    const fallback = `OCRのリクエストに失敗しました${httpStatus}`;
     const message =
-      data?.message && typeof data.message === "string"
-        ? `${fallback}: ${data.message}`
+      typeof dataRecord?.message === "string"
+        ? `${fallback}: ${dataRecord.message}`
         : fallback;
     throw new Error(message);
   }
@@ -100,7 +150,7 @@ export const detectOrientationFromPage = async (
 ): Promise<{ suggestion: OrientationResponse; imageBase64: string; viewport: { width: number; height: number } }> => {
   const {
     page,
-    threshold = DEFAULT_THRESHOLD,
+    threshold,
     scale = 1,
     rotation = 0,
     createCanvas,
@@ -117,7 +167,7 @@ export const detectOrientationFromPage = async (
 
   const requester =
     request ??
-    ((payload: { imageBase64: string; threshold: number }) =>
+    ((payload: { imageBase64: string; threshold?: number }) =>
       requestOrientation(payload.imageBase64, { threshold: payload.threshold }));
 
   const suggestion = await requester({ imageBase64: dataUrl, threshold });

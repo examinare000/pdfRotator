@@ -6,6 +6,8 @@
 /server/public/
 /release/
 *.zip
+/logs/
+/server/logs/
 
 # 環境ファイル
 .env

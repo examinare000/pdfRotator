@@ -1,24 +1,32 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent, type PointerEvent } from "react";
 import { createPdfJsDistLoader } from "./lib/pdfjs";
-import workerSrc from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { useViewerState } from "./hooks/useViewerState";
 import { renderPageToCanvas } from "./lib/pdf";
+import { normalizeSelectedPages } from "./lib/selection";
+import { calculateThumbGridWindow } from "./lib/thumb-grid";
 import { savePdfWithRotation } from "./lib/pdf-save";
 import { detectOrientationForPage, type OrientationSuggestion } from "./lib/ocr";
-import { clampPageNumber } from "./lib/rotation";
+import { applyRotationChange } from "./lib/rotation";
+import { fetchHealth, type HealthInfo } from "./lib/health";
+import { logClient } from "./lib/logger";
+import { Header } from "./components/Header";
+import { Footer } from "./components/Footer";
+import { ShortcutsPanel } from "./components/ShortcutsPanel";
+import { UploadPanel } from "./components/UploadPanel";
 import "./App.css";
 
-const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
-const DEFAULT_OCR_THRESHOLD = 0.6;
+const MAX_FILE_SIZE = 300 * 1024 * 1024; // 300MB
+const OCR_AUTO_SCALE = 0.6;
+const OCR_RETRY_SCALE = 0.45;
+const CONTINUOUS_ROTATION_DEFAULT = 0.6;
 
 type RenderState = "idle" | "rendering" | "error";
+type SelectionMode = "add" | "remove";
 
-const clampThreshold = (value: number): number => {
-  if (Number.isNaN(value)) return 0;
-  if (value < 0) return 0;
-  if (value > 1) return 1;
-  return value;
-};
+const THUMB_MIN_WIDTH = 140;
+const THUMB_GRID_GAP = 12;
+const THUMB_GRID_PADDING = 14;
+const THUMB_ROW_BUFFER = 2;
 
 const isPdfFile = (file: File): boolean => {
   if (file.type === "application/pdf") {
@@ -49,20 +57,23 @@ const readFileAsArrayBuffer = async (file: Blob): Promise<ArrayBuffer> => {
 };
 
 function App() {
-  const pdfLoader = useMemo(() => createPdfJsDistLoader({ workerSrc }), []);
+  const pdfLoader = useMemo(() => createPdfJsDistLoader(), []);
   const {
     state,
     loadFromArrayBuffer,
     setPage,
-    nextPage,
-    prevPage,
-    rotateCurrentPage,
-    setZoom,
+    rotatePage,
     reset,
   } = useViewerState({ loader: pdfLoader });
 
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const thumbCanvasRef = useRef(new Map<number, HTMLCanvasElement | null>());
+  const thumbMetaRef = useRef(new Map<number, { rotation: number }>());
+  const thumbRenderQueueRef = useRef(new Map<number, Promise<void>>());
+  const rowHeightRef = useRef(260);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const dragDepthRef = useRef(0);
+  const selectingRef = useRef(false);
+  const selectionModeRef = useRef<SelectionMode>("add");
   const [fileName, setFileName] = useState<string>("");
   const [originalBuffer, setOriginalBuffer] = useState<ArrayBuffer | null>(null);
   const [renderState, setRenderState] = useState<RenderState>("idle");
@@ -72,9 +83,107 @@ function App() {
   );
   const [ocrError, setOcrError] = useState<string | null>(null);
   const [ocrLoading, setOcrLoading] = useState(false);
-  const [ocrThreshold, setOcrThreshold] = useState(DEFAULT_OCR_THRESHOLD);
-  const [pageInput, setPageInput] = useState<string>("1");
+  const [ocrProgress, setOcrProgress] = useState<{ current: number; total: number; page: number } | null>(null);
+  const [ocrCompleteMessage, setOcrCompleteMessage] = useState<string | null>(null);
+  const [ocrResumeInfo, setOcrResumeInfo] = useState<{
+    targetPages: number[];
+    options: { forceAll?: boolean };
+    currentIndex: number;
+    continuousRotation: boolean;
+    lastHigh: { page: number; rotation: number } | null;
+    threshold: number;
+    highConfidenceRotations: Record<number, number>;
+  } | null>(null);
+  const [continuousRotationEnabled, setContinuousRotationEnabled] = useState(false);
+  const [continuousRotationThreshold, setContinuousRotationThreshold] = useState(CONTINUOUS_ROTATION_DEFAULT);
   const [dragging, setDragging] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
+  const [health, setHealth] = useState<HealthInfo | null>(null);
+  const [selectedPages, setSelectedPages] = useState<number[]>([]);
+  const [previewPage, setPreviewPage] = useState<number | null>(null);
+  const [rowHeight, setRowHeight] = useState(rowHeightRef.current);
+  const [gridMetrics, setGridMetrics] = useState({
+    scrollTop: 0,
+    viewportHeight: 0,
+    containerWidth: 0,
+  });
+  const ocrAbortRef = useRef<AbortController | null>(null);
+  const ocrRunRef = useRef<{
+    targetPages: number[];
+    options: { forceAll?: boolean };
+    currentIndex: number;
+    continuousRotation: boolean;
+    lastHigh: { page: number; rotation: number } | null;
+    threshold: number;
+    highConfidenceRotations: Record<number, number>;
+  } | null>(null);
+  const autoOcrDocRef = useRef<unknown>(null);
+  const previewCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const previewRenderQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const viewerGridRef = useRef<HTMLDivElement | null>(null);
+  const helpModalRef = useRef<HTMLDivElement | null>(null);
+  const previewModalRef = useRef<HTMLDivElement | null>(null);
+
+  const renderThumbnail = useCallback(
+    async (pageNumber: number, canvas: HTMLCanvasElement) => {
+      if (!state.pdfDoc || state.status !== "ready") return;
+      const rotation = state.rotationMap[pageNumber] ?? 0;
+      const meta = thumbMetaRef.current.get(pageNumber);
+      if (meta?.rotation === rotation && canvas.width > 0) {
+        return;
+      }
+      const queue = thumbRenderQueueRef.current;
+      const previous = queue.get(pageNumber) ?? Promise.resolve();
+      const next = previous
+        .catch(() => {})
+        .then(async () => {
+          const page = await state.pdfDoc!.getPage(pageNumber);
+          await renderPageToCanvas(page, canvas, {
+            scale: 1,
+            rotation,
+            maxWidth: 180,
+            maxHeight: 240,
+          });
+          thumbMetaRef.current.set(pageNumber, { rotation });
+        });
+      queue.set(pageNumber, next);
+      try {
+        await next;
+      } finally {
+        if (queue.get(pageNumber) === next) {
+          queue.delete(pageNumber);
+        }
+      }
+    },
+    [state.pdfDoc, state.rotationMap, state.status]
+  );
+
+  const setThumbCanvas = useCallback(
+    (pageNumber: number) => (node: HTMLCanvasElement | null) => {
+      thumbCanvasRef.current.set(pageNumber, node);
+      if (!node) {
+        thumbMetaRef.current.delete(pageNumber);
+        return;
+      }
+      void renderThumbnail(pageNumber, node).catch((error) => {
+        setRenderState("error");
+        const text = error instanceof Error ? error.message : "サムネイルの描画に失敗しました";
+        setMessage(text);
+        logClient("error", "thumbnail_render_failed", { message: text });
+      });
+    },
+    [renderThumbnail]
+  );
+
+  const measureThumbCardRef = useCallback((node: HTMLButtonElement | null) => {
+    if (!node) return;
+    const rect = node.getBoundingClientRect();
+    if (!rect.height) return;
+    const nextHeight = Math.round(rect.height);
+    if (Math.abs(nextHeight - rowHeightRef.current) < 2) return;
+    rowHeightRef.current = nextHeight;
+    setRowHeight(nextHeight);
+  }, []);
 
   const handleFile = async (file: File) => {
     if (!isPdfFile(file)) {
@@ -82,17 +191,21 @@ function App() {
       return;
     }
     if (file.size > MAX_FILE_SIZE) {
-      setMessage("ファイルサイズは50MB以内にしてください");
+      setMessage("ファイルサイズは300MB以内にしてください");
       return;
     }
     setMessage(null);
     setFileName(file.name);
     setOcrSuggestion(null);
     setOcrError(null);
+    setOcrCompleteMessage(null);
+    setOcrResumeInfo(null);
     try {
       const buffer = await readFileAsArrayBuffer(file);
       await loadFromArrayBuffer(buffer);
       setOriginalBuffer(buffer);
+      setSelectedPages([]);
+      setPreviewPage(null);
     } catch (error) {
       const text = error instanceof Error ? error.message : "PDFの読み込みに失敗しました";
       setMessage(text);
@@ -132,36 +245,132 @@ function App() {
     }
   };
 
-  useEffect(() => {
-    if (state.numPages > 0) {
-      setPageInput(String(state.currentPage));
-    } else {
-      setPageInput("1");
-    }
-  }, [state.currentPage, state.numPages]);
+  const updateGridMetrics = useCallback(() => {
+    const container = viewerGridRef.current;
+    if (!container) return;
+    setGridMetrics({
+      scrollTop: container.scrollTop,
+      viewportHeight: container.clientHeight,
+      containerWidth: container.clientWidth,
+    });
+  }, []);
 
   useEffect(() => {
-    if (!state.pdfDoc || !canvasRef.current || state.status !== "ready") {
+    const container = viewerGridRef.current;
+    if (!container) return;
+    let frame: number | null = null;
+    const onScroll = () => {
+      if (frame !== null) return;
+      frame = window.requestAnimationFrame(() => {
+        frame = null;
+        updateGridMetrics();
+      });
+    };
+    updateGridMetrics();
+    container.addEventListener("scroll", onScroll, { passive: true });
+    window.addEventListener("resize", updateGridMetrics);
+    return () => {
+      if (frame !== null) {
+        window.cancelAnimationFrame(frame);
+      }
+      container.removeEventListener("scroll", onScroll);
+      window.removeEventListener("resize", updateGridMetrics);
+    };
+  }, [updateGridMetrics]);
+
+  const thumbGridWindow = useMemo(() => {
+    if (!state.pdfDoc || state.numPages <= 0) {
+      return {
+        pageNumbers: [],
+        paddingTop: 0,
+        paddingBottom: 0,
+      };
+    }
+    const fallbackWidth = typeof window !== "undefined" ? window.innerWidth : 0;
+    const fallbackHeight = typeof window !== "undefined" ? window.innerHeight : 0;
+    return calculateThumbGridWindow({
+      numPages: state.numPages,
+      containerWidth: gridMetrics.containerWidth,
+      viewportHeight: gridMetrics.viewportHeight,
+      scrollTop: gridMetrics.scrollTop,
+      rowHeight,
+      minWidth: THUMB_MIN_WIDTH,
+      gridGap: THUMB_GRID_GAP,
+      gridPadding: THUMB_GRID_PADDING,
+      rowBuffer: THUMB_ROW_BUFFER,
+      fallbackWidth,
+      fallbackHeight,
+    });
+  }, [gridMetrics, rowHeight, state.numPages, state.pdfDoc]);
+
+  useEffect(() => {
+    const activeModal = previewPage !== null ? previewModalRef.current : helpOpen ? helpModalRef.current : null;
+    if (!activeModal) return;
+
+    const getFocusableElements = (): HTMLElement[] => {
+      const elements = activeModal.querySelectorAll<HTMLElement>(
+        "button, [href], input, select, textarea, [tabindex]:not([tabindex='-1'])"
+      );
+      return Array.from(elements).filter((el) => !el.hasAttribute("disabled"));
+    };
+
+    const focusables = getFocusableElements();
+    if (focusables.length > 0) {
+      focusables[0].focus();
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Tab") return;
+      const elements = getFocusableElements();
+      if (elements.length === 0) {
+        event.preventDefault();
+        return;
+      }
+      const first = elements[0];
+      const last = elements[elements.length - 1];
+      const active = document.activeElement as HTMLElement | null;
+
+      if (event.shiftKey) {
+        if (!active || active === first) {
+          event.preventDefault();
+          last.focus();
+        }
+        return;
+      }
+
+      if (!active || active === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [helpOpen, previewPage]);
+
+  useEffect(() => {
+    if (!state.pdfDoc || state.status !== "ready") {
       return;
     }
     let cancelled = false;
     const run = async () => {
       setRenderState("rendering");
       try {
-        const page = await state.pdfDoc!.getPage(state.currentPage);
-        const rotation = state.rotationMap[state.currentPage] ?? 0;
-        await renderPageToCanvas(page as any, canvasRef.current!, {
-          scale: state.zoom,
-          rotation,
-        });
+        for (const pageNumber of thumbGridWindow.pageNumbers) {
+          if (cancelled) return;
+          const canvas = thumbCanvasRef.current.get(pageNumber);
+          if (!canvas) continue;
+          await renderThumbnail(pageNumber, canvas);
+        }
         if (!cancelled) {
           setRenderState("idle");
         }
       } catch (error) {
         if (!cancelled) {
           setRenderState("error");
-          const text = error instanceof Error ? error.message : "ページの描画に失敗しました";
+          const text = error instanceof Error ? error.message : "サムネイルの描画に失敗しました";
           setMessage(text);
+          logClient("error", "thumbnail_render_failed", { message: text });
         }
       }
     };
@@ -169,10 +378,28 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [state.pdfDoc, state.currentPage, state.rotationMap, state.zoom, state.status]);
+  }, [renderThumbnail, state.pdfDoc, state.rotationMap, state.status, thumbGridWindow.pageNumbers]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const run = async () => {
+      try {
+        const next = await fetchHealth();
+        if (!cancelled) setHealth(next);
+      } catch {
+        if (!cancelled) setHealth(null);
+      }
+    };
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const canSave = originalBuffer !== null && originalBuffer.byteLength > 0 && state.status === "ready";
 
   const handleSave = useCallback(async () => {
-    if (!originalBuffer || originalBuffer.byteLength === 0 || state.status !== "ready") {
+    if (!canSave) {
       setMessage("PDFが読み込まれていません");
       return;
     }
@@ -186,13 +413,143 @@ function App() {
       const text = error instanceof Error ? error.message : "保存に失敗しました";
       setMessage(text);
     }
-  }, [originalBuffer, state.rotationMap, state.status, fileName]);
+  }, [canSave, originalBuffer, state.rotationMap, fileName]);
 
   useEffect(() => {
     if (state.status === "error") {
       setOriginalBuffer(null);
     }
   }, [state.status]);
+
+  useEffect(() => {
+    if (!state.pdfDoc) {
+      setSelectedPages([]);
+      setPreviewPage(null);
+      return;
+    }
+    setSelectedPages([]);
+    thumbMetaRef.current.clear();
+  }, [state.pdfDoc]);
+
+  useEffect(() => {
+    const stopSelecting = () => {
+      selectingRef.current = false;
+    };
+    window.addEventListener("pointerup", stopSelecting);
+    window.addEventListener("pointercancel", stopSelecting);
+    return () => {
+      window.removeEventListener("pointerup", stopSelecting);
+      window.removeEventListener("pointercancel", stopSelecting);
+    };
+  }, []);
+
+  useEffect(() => {
+    const handleError = (event: ErrorEvent) => {
+      logClient("error", "window_error", {
+        message: event.message,
+        filename: event.filename,
+        lineno: event.lineno,
+        colno: event.colno,
+      });
+    };
+    const handleRejection = (event: PromiseRejectionEvent) => {
+      const reason = event.reason;
+      logClient("error", "unhandled_rejection", {
+        message: reason instanceof Error ? reason.message : "unhandled_rejection",
+        stack: reason instanceof Error ? reason.stack : undefined,
+      });
+    };
+    window.addEventListener("error", handleError);
+    window.addEventListener("unhandledrejection", handleRejection);
+    return () => {
+      window.removeEventListener("error", handleError);
+      window.removeEventListener("unhandledrejection", handleRejection);
+    };
+  }, []);
+
+  const applySelection = useCallback((pageNumber: number, mode: SelectionMode) => {
+    setSelectedPages((prev) => {
+      const next = new Set(prev);
+      if (mode === "add") {
+        next.add(pageNumber);
+      } else {
+        next.delete(pageNumber);
+      }
+      return Array.from(next).sort((a, b) => a - b);
+    });
+  }, []);
+
+  const handleThumbPointerDown = useCallback(
+    (pageNumber: number, isSelected: boolean) => (event: PointerEvent<HTMLButtonElement>) => {
+      if (state.status !== "ready") return;
+      if (event.button !== 0) return;
+      event.preventDefault();
+      selectingRef.current = true;
+      selectionModeRef.current = isSelected ? "remove" : "add";
+      applySelection(pageNumber, selectionModeRef.current);
+      setPage(pageNumber);
+    },
+    [applySelection, setPage, state.status]
+  );
+
+  const handleThumbPointerEnter = useCallback(
+    (pageNumber: number) => (event: PointerEvent<HTMLButtonElement>) => {
+      if (!selectingRef.current) return;
+      if (event.buttons !== 1) return;
+      applySelection(pageNumber, selectionModeRef.current);
+    },
+    [applySelection]
+  );
+
+  const handleThumbDoubleClick = useCallback(
+    (pageNumber: number) => () => {
+      if (state.status !== "ready") return;
+      setPreviewPage(pageNumber);
+    },
+    [state.status]
+  );
+
+  const rotateSelectedPages = useCallback(
+    (delta: number) => {
+      if (selectedPages.length === 0) return;
+      selectedPages.forEach((pageNumber) => rotatePage(pageNumber, delta));
+    },
+    [rotatePage, selectedPages]
+  );
+
+  useEffect(() => {
+    const run = async () => {
+      if (previewPage === null) return;
+      if (!state.pdfDoc || state.status !== "ready") return;
+      if (!previewCanvasRef.current) return;
+      setRenderState("rendering");
+      try {
+        const page = await state.pdfDoc.getPage(previewPage);
+        const rotation = state.rotationMap[previewPage] ?? 0;
+        const previous = previewRenderQueueRef.current;
+        const next = previous
+          .catch(() => {})
+          .then(() =>
+            renderPageToCanvas(page, previewCanvasRef.current!, {
+              scale: 1.6,
+              rotation,
+              maxWidth: 900,
+              maxHeight: 1200,
+            })
+          )
+          .then(() => undefined);
+        previewRenderQueueRef.current = next;
+        await next;
+      } catch (error) {
+        const text = error instanceof Error ? error.message : "プレビューの描画に失敗しました";
+        setMessage(text);
+        logClient("error", "preview_render_failed", { message: text, page: previewPage });
+      } finally {
+        setRenderState("idle");
+      }
+    };
+    void run();
+  }, [previewPage, state.pdfDoc, state.rotationMap, state.status]);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -203,22 +560,30 @@ function App() {
       if (state.status !== "ready") return;
       switch (e.key) {
         case "ArrowRight":
-          e.preventDefault();
-          rotateCurrentPage(90);
-          nextPage();
+          if (e.ctrlKey || e.metaKey) {
+            e.preventDefault();
+            rotateSelectedPages(90);
+          }
           break;
         case "ArrowLeft":
-          e.preventDefault();
-          rotateCurrentPage(-90);
-          nextPage();
-          break;
-        case "ArrowDown":
-          e.preventDefault();
-          nextPage();
+          if (e.ctrlKey || e.metaKey) {
+            e.preventDefault();
+            rotateSelectedPages(-90);
+          }
           break;
         case "ArrowUp":
-          e.preventDefault();
-          prevPage();
+        case "ArrowDown":
+          if (e.ctrlKey || e.metaKey) {
+            e.preventDefault();
+            rotateSelectedPages(180);
+          }
+          break;
+        case "Escape":
+          if (previewPage !== null) {
+            setPreviewPage(null);
+          } else {
+            setSelectedPages([]);
+          }
           break;
         case "s":
         case "S":
@@ -235,9 +600,11 @@ function App() {
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [state.status, rotateCurrentPage, nextPage, prevPage, originalBuffer, state.rotationMap, fileName, handleSave]);
+  }, [state.status, previewPage, rotateSelectedPages, originalBuffer, fileName, handleSave]);
 
   const handleReset = () => {
+    ocrAbortRef.current?.abort();
+    autoOcrDocRef.current = null;
     reset();
     setOriginalBuffer(null);
     setFileName("");
@@ -245,97 +612,252 @@ function App() {
     setOcrSuggestion(null);
     setOcrError(null);
     setOcrLoading(false);
+    setOcrProgress(null);
+    setOcrCompleteMessage(null);
+    setOcrResumeInfo(null);
     setRenderState("idle");
+    setSelectedPages([]);
+    setPreviewPage(null);
+    thumbMetaRef.current.clear();
   };
 
-  const handlePageJump = () => {
-    if (state.status !== "ready") {
-      return;
-    }
-    const raw = Number(pageInput);
-    if (!Number.isFinite(raw)) {
-      setMessage("ページ番号が不正です");
-      return;
-    }
-    const nextPageNumber = clampPageNumber(raw, state.numPages);
-    setPage(nextPageNumber);
-    setMessage(null);
+  const handleReselectPdf = () => {
+    fileInputRef.current?.click();
   };
 
-  const handleDetectOrientation = async () => {
+  useEffect(() => {
+    return () => {
+      ocrAbortRef.current?.abort();
+    };
+  }, []);
+
+  const handleDetectOrientation = useCallback(async (options: {
+    forceAll?: boolean;
+    resume?: {
+      targetPages: number[];
+      options: { forceAll?: boolean };
+      currentIndex: number;
+      continuousRotation: boolean;
+      lastHigh: { page: number; rotation: number } | null;
+      threshold: number;
+      highConfidenceRotations: Record<number, number>;
+    };
+  } = {}) => {
+    if (health && !health.ocrEnabled) {
+      setOcrError("OCRは無効化されています");
+      return;
+    }
     if (!state.pdfDoc) {
       setOcrError("PDFを読み込んでから実行してください");
       return;
     }
+
+    ocrAbortRef.current?.abort();
+    const abortController = new AbortController();
+    ocrAbortRef.current = abortController;
+
+    const fetcher: typeof fetch = (input, init) =>
+      fetch(input, { ...init, signal: abortController.signal });
+    const pdfDoc = state.pdfDoc;
+
+    const resumeInfo = options.resume ?? null;
+    const continuousRotation = resumeInfo?.continuousRotation ?? continuousRotationEnabled;
+    const continuousRotationThresholdValue = resumeInfo?.threshold ?? continuousRotationThreshold;
+    const normalizedSelection = options.forceAll
+      ? []
+      : normalizeSelectedPages(selectedPages, state.numPages);
+    const targetPages = resumeInfo?.targetPages
+      ?? (normalizedSelection.length > 0
+        ? normalizedSelection
+        : Array.from({ length: state.numPages }, (_, index) => index + 1));
+    const total = targetPages.length;
+    const startIndex = resumeInfo?.currentIndex ?? 0;
+    const runOptions = resumeInfo?.options ?? { forceAll: options.forceAll };
+    let lastHigh = resumeInfo?.lastHigh ?? null;
+    const highConfidenceRotations = { ...(resumeInfo?.highConfidenceRotations ?? {}) };
+
     setOcrLoading(true);
     setOcrError(null);
+    setOcrCompleteMessage(null);
+    setOcrResumeInfo(null);
+    setOcrProgress(
+      total > 0
+        ? { current: Math.min(startIndex, total), total, page: targetPages[Math.min(startIndex, total - 1)] }
+        : null
+    );
+
     try {
-      const suggestion = await detectOrientationForPage(state.pdfDoc, state.currentPage, {
-        fetcher: fetch,
-        threshold: ocrThreshold,
-      });
-      setOcrSuggestion(suggestion);
+      let workingRotationMap = state.rotationMap;
+      const errors: Array<{ page: number; message: string }> = [];
+      const targetPagesSet = new Set(targetPages);
+      const applyRotationToPage = (targetPage: number, targetRotation: number) => {
+        const currentRotation = workingRotationMap[targetPage] ?? 0;
+        const delta = targetRotation - currentRotation;
+        if (delta === 0) return;
+        rotatePage(targetPage, delta);
+        workingRotationMap = applyRotationChange(workingRotationMap, targetPage, delta);
+      };
+      ocrRunRef.current = {
+        targetPages,
+        options: runOptions,
+        currentIndex: startIndex,
+        continuousRotation,
+        lastHigh,
+        threshold: continuousRotationThresholdValue,
+        highConfidenceRotations,
+      };
+
+      for (let index = startIndex; index < targetPages.length; index += 1) {
+        const pageNumber = targetPages[index];
+        if (ocrRunRef.current) {
+          ocrRunRef.current.currentIndex = index;
+        }
+        if (abortController.signal.aborted) {
+          throw new Error("OCR処理が中断されました");
+        }
+
+        setOcrProgress({
+          current: index + 1,
+          total,
+          page: pageNumber,
+        });
+
+        try {
+          const baseScale = runOptions.forceAll ? OCR_AUTO_SCALE : 1;
+          const detectWithScale = (scale: number) =>
+            detectOrientationForPage(pdfDoc!, pageNumber, {
+              fetcher,
+              scale,
+            });
+
+          let suggestion: OrientationSuggestion;
+          try {
+            suggestion = await detectWithScale(baseScale);
+          } catch (error) {
+            const message = error instanceof Error ? error.message : "";
+            if (baseScale > OCR_RETRY_SCALE && message.includes("HTTP 504")) {
+              suggestion = await detectWithScale(OCR_RETRY_SCALE);
+            } else {
+              throw error;
+            }
+          }
+          setOcrSuggestion(suggestion);
+
+          if (suggestion.rotation === null) {
+            continue;
+          }
+
+          applyRotationToPage(pageNumber, suggestion.rotation);
+
+          const confidenceValue = suggestion.likelihood ?? suggestion.confidence;
+          if (continuousRotation && confidenceValue >= continuousRotationThresholdValue) {
+            highConfidenceRotations[pageNumber] = suggestion.rotation;
+            if (lastHigh && lastHigh.rotation === suggestion.rotation) {
+              const startPage = lastHigh.page + 1;
+              const endPage = pageNumber - 1;
+              if (startPage <= endPage) {
+                let hasConflict = false;
+                for (let checkPage = startPage; checkPage <= endPage; checkPage += 1) {
+                  const recorded = highConfidenceRotations[checkPage];
+                  if (recorded !== undefined && recorded !== suggestion.rotation) {
+                    hasConflict = true;
+                    break;
+                  }
+                }
+                if (!hasConflict) {
+                  for (let fillPage = startPage; fillPage <= endPage; fillPage += 1) {
+                    if (!targetPagesSet.has(fillPage)) continue;
+                    applyRotationToPage(fillPage, suggestion.rotation);
+                  }
+                }
+              }
+            }
+            lastHigh = { page: pageNumber, rotation: suggestion.rotation };
+            if (ocrRunRef.current) {
+              ocrRunRef.current.lastHigh = lastHigh;
+              ocrRunRef.current.highConfidenceRotations = highConfidenceRotations;
+            }
+          }
+        } catch (error) {
+          const text = error instanceof Error ? error.message : "OCRの推定に失敗しました";
+          errors.push({ page: pageNumber, message: text });
+        }
+      }
+
+      if (errors.length > 0) {
+        setOcrError(`${errors.length}ページでOCRに失敗しました（例: ${errors[0].page}ページ）`);
+      }
+      if (total > 1) {
+        const failureSuffix = errors.length > 0 ? `（失敗 ${errors.length}ページ）` : "";
+        setOcrCompleteMessage(`${total}ページの向き推定が完了しました${failureSuffix}`);
+      }
     } catch (error) {
       const text = error instanceof Error ? error.message : "OCRの推定に失敗しました";
-      setOcrSuggestion(null);
-      setOcrError(text);
+      const aborted =
+        text.includes("中断")
+        || (error instanceof DOMException && error.name === "AbortError");
+      if (!aborted) {
+        setOcrError(text);
+        logClient("error", "ocr_detect_failed", { message: text });
+        return;
+      }
+      if (ocrRunRef.current && total > 1) {
+        setOcrResumeInfo({ ...ocrRunRef.current });
+      }
     } finally {
       setOcrLoading(false);
+      setOcrProgress(null);
+      ocrRunRef.current = null;
     }
-  };
+  }, [continuousRotationEnabled, health, rotatePage, selectedPages, state.numPages, state.pdfDoc, state.rotationMap]);
 
-  const handleApplySuggestion = () => {
-    if (!ocrSuggestion || ocrSuggestion.rotation === null) {
+  const handleAbortOcr = useCallback(() => {
+    if (!ocrLoading || !ocrProgress || ocrProgress.total <= 1) return;
+    ocrAbortRef.current?.abort();
+    if (ocrRunRef.current) {
+      setOcrResumeInfo({ ...ocrRunRef.current });
+    }
+  }, [ocrLoading, ocrProgress]);
+
+  const handleResumeOcr = useCallback(() => {
+    if (!ocrResumeInfo) return;
+    void handleDetectOrientation({ resume: ocrResumeInfo });
+  }, [handleDetectOrientation, ocrResumeInfo]);
+
+  useEffect(() => {
+    if (!state.pdfDoc || state.status !== "ready") {
+      autoOcrDocRef.current = null;
       return;
     }
-    if (ocrSuggestion.page !== state.currentPage) {
-      setOcrError("推定結果が現在のページと一致しません");
+    if (health?.ocrEnabled !== true) {
       return;
     }
-    const currentRotation = state.rotationMap[state.currentPage] ?? 0;
-    const delta = ocrSuggestion.rotation - currentRotation;
-    rotateCurrentPage(delta);
-    setOcrError(null);
-  };
+    if (autoOcrDocRef.current === state.pdfDoc) {
+      return;
+    }
+    autoOcrDocRef.current = state.pdfDoc;
+    void handleDetectOrientation({ forceAll: true });
+  }, [handleDetectOrientation, health?.ocrEnabled, state.pdfDoc, state.status]);
 
   const suggestionText =
     ocrSuggestion && state.pdfDoc
       ? ocrSuggestion.rotation === null
         ? "向きを特定できませんでした"
-        : `${ocrSuggestion.rotation}° / 信頼度 ${ocrSuggestion.confidence.toFixed(2)}`
+        : `${ocrSuggestion.rotation}° / 尤度 ${(ocrSuggestion.likelihood ?? ocrSuggestion.confidence).toFixed(2)}`
       : "未推定";
+
+  const toastText = ocrError ?? message;
+  const versionText = health?.version ? `v${health.version}` : "v--";
+  const selectedSet = useMemo(() => new Set(selectedPages), [selectedPages]);
+  const selectionLabel = selectedPages.length > 0 ? `${selectedPages.length}ページ選択中` : "未選択";
 
   return (
     <div className="app">
-      <div className="glow glow--one" />
-      <div className="glow glow--two" />
-
-      <header className="app__header">
-        <div className="brand">
-          <div className="brand__eyebrow">
-            <span className="dot" />
-            <span>Precision PDF Lab</span>
-          </div>
-          <h1>PDFビューワ & 回転スタジオ</h1>
-          <p className="sub">
-            直感的なUIとショートカットでページを回転。OCRで向きを推定し、保存までノンストップ。
-          </p>
-          <div className="badges">
-            <span className="pill pill--ghost">矢印キー操作</span>
-            <span className="pill pill--ghost">OCR向き推定</span>
-            <span className="pill pill--ghost">ローカル保存</span>
-          </div>
-        </div>
-        <div className="header-actions">
-          <div className="file-chip">
-            <span className="chip-label">選択中</span>
-            <span className="chip-value">{fileName || "未選択"}</span>
-          </div>
-          <button className="reset-btn" onClick={handleReset}>
-            状態をリセット
-          </button>
-        </div>
-      </header>
+      <Header
+        fileName={fileName}
+        onReset={handleReset}
+        onHelpOpen={() => setHelpOpen(true)}
+      />
 
       <div className="workspace">
         <div className="workspace__main">
@@ -343,24 +865,83 @@ function App() {
             <div className="viewer__top">
               <div className="status">
                 <span className={`pill pill--${state.status}`}>状態: {state.status}</span>
-                {renderState === "rendering" && <span className="pill pill--render">描画中...</span>}
+                {renderState === "rendering" && <span className="pill pill--render">サムネイル生成中...</span>}
               </div>
               <div className="viewer__meta">
-                <span className="meta-badge">ページ {state.currentPage} / {state.numPages || "--"}</span>
-                <span className="meta-badge">ズーム {state.zoom.toFixed(2)}x</span>
+                <span className="meta-badge">総ページ {state.numPages || "--"}</span>
+                <span className="meta-badge">選択 {selectionLabel}</span>
               </div>
             </div>
-            <div className="viewer__canvas">
-              {!state.pdfDoc && <div className="placeholder">PDFを読み込むとここに表示されます</div>}
-              <canvas ref={canvasRef} />
+            <p className="hint">クリック/ドラッグで複数選択。Ctrl/Cmd + ←/→/↑/↓ で回転。ダブルクリックで拡大。</p>
+            <div
+              className={`viewer__grid${dragging ? " viewer__grid--dragging" : ""}`}
+              ref={viewerGridRef}
+              onDragEnter={handleDragEnter}
+              onDragOver={(event) => event.preventDefault()}
+              onDragLeave={handleDragLeave}
+              onDrop={handleDrop}
+            >
+              {dragging && (
+                <div className="viewer__drop-overlay">
+                  <span>PDFをドロップして読み込み</span>
+                </div>
+              )}
+              {!state.pdfDoc && !dragging && <div className="placeholder">PDFを読み込むとここに表示されます</div>}
+              {state.pdfDoc && (
+                <div
+                  className="thumb-grid"
+                  role="list"
+                  aria-label="ページ一覧"
+                  style={{
+                    paddingTop: thumbGridWindow.paddingTop,
+                    paddingBottom: thumbGridWindow.paddingBottom,
+                  }}
+                >
+                  {thumbGridWindow.pageNumbers.map((pageNumber, index) => {
+                    const isSelected = selectedSet.has(pageNumber);
+                    const rotation = state.rotationMap[pageNumber] ?? 0;
+                    return (
+                      <button
+                        type="button"
+                        key={pageNumber}
+                        className={`thumb-card${isSelected ? " is-selected" : ""}${rotation !== 0 ? " is-rotated" : ""}`}
+                        aria-pressed={isSelected}
+                        aria-label={`ページ ${pageNumber}`}
+                        disabled={state.status !== "ready"}
+                        onPointerDown={handleThumbPointerDown(pageNumber, isSelected)}
+                        onPointerEnter={handleThumbPointerEnter(pageNumber)}
+                        onDoubleClick={handleThumbDoubleClick(pageNumber)}
+                        ref={index === 0 ? measureThumbCardRef : undefined}
+                      >
+                        <div className="thumb-canvas">
+                          <canvas
+                            ref={setThumbCanvas(pageNumber)}
+                          />
+                        </div>
+                        <div className="thumb-meta">
+                          <span>p.{pageNumber}</span>
+                          {rotation !== 0 && <span className="pill pill--ghost">{rotation}°</span>}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
             </div>
             <div className="viewer__actions">
               <button
                 className="save-btn"
                 onClick={() => handleSave()}
-                disabled={!originalBuffer || state.status !== "ready"}
+                disabled={!canSave}
               >
                 適用して保存 (Ctrl+S)
+              </button>
+              <button
+                type="button"
+                onClick={() => setSelectedPages([])}
+                disabled={selectedPages.length === 0 || state.status !== "ready"}
+              >
+                選択解除
               </button>
               <div className="footnote">
                 {state.errorMessage && <span className="error-text">{state.errorMessage}</span>}
@@ -371,107 +952,66 @@ function App() {
         </div>
 
         <div className="workspace__side">
-          <section className="panel upload">
-            <div
-              className={`upload__area ${dragging ? "upload__area--dragging" : ""}`}
-              onDragEnter={handleDragEnter}
-              onDragOver={(event) => event.preventDefault()}
-              onDragLeave={handleDragLeave}
-              onDrop={handleDrop}
-              aria-label="PDFをドラッグ&ドロップ"
-            >
-              <div>
-                <p className="label">PDFアップロード</p>
-                <p className="hint">50MB以内のPDF。ドラッグ&ドロップまたは選択で読み込みます。</p>
-              </div>
-              <div className="upload__controls">
-                <label className="upload__btn">
-                  <input type="file" accept="application/pdf" onChange={handleFileInput} />
-                  ファイルを選択
-                </label>
-              </div>
-            </div>
-          </section>
+          <UploadPanel
+            dragging={dragging}
+            onDragEnter={handleDragEnter}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+            fileInputRef={fileInputRef}
+            onFileChange={handleFileInput}
+            onReselect={handleReselectPdf}
+            disabled={state.status === "loading"}
+          />
 
           <section className="panel controls">
             <div className="controls__group">
-              <p className="label">ページ</p>
-              <div className="button-row">
-                <button onClick={prevPage} disabled={state.currentPage <= 1 || state.status !== "ready"}>
-                  前へ
-                </button>
-                <span className="page-indicator">
-                  {state.currentPage} / {state.numPages || "--"}
-                </span>
-                <button
-                  onClick={nextPage}
-                  disabled={state.currentPage >= state.numPages || state.status !== "ready"}
-                >
-                  次へ
-                </button>
-              </div>
-              <div className="button-row">
-                <input
-                  className="number-input"
-                  type="number"
-                  inputMode="numeric"
-                  min={1}
-                  max={state.numPages || 1}
-                  value={pageInput}
-                  onChange={(event) => setPageInput(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter") {
-                      event.preventDefault();
-                      handlePageJump();
-                    }
-                  }}
-                  disabled={state.status !== "ready"}
-                  aria-label="ページ番号入力"
-                />
-                <button onClick={handlePageJump} disabled={state.status !== "ready"}>
-                  移動
-                </button>
-              </div>
-            </div>
-            <div className="controls__group">
               <p className="label">OCR向き推定</p>
-              <div className="threshold-row">
-                <label className="threshold-label">
-                  しきい値
-                  <input
-                    className="number-input"
-                    type="number"
-                    inputMode="decimal"
-                    min={0}
-                    max={1}
-                    step={0.05}
-                    value={ocrThreshold}
-                    onChange={(event) => setOcrThreshold(clampThreshold(Number(event.target.value)))}
-                    disabled={state.status !== "ready"}
-                    aria-label="OCR信頼度しきい値"
-                  />
-                </label>
-                <span className="threshold-value">{Math.round(ocrThreshold * 100)}%</span>
-              </div>
               <div className="button-row">
                 <button
-                  onClick={handleDetectOrientation}
-                  disabled={state.status !== "ready" || ocrLoading}
+                  onClick={() => { void handleDetectOrientation(); }}
+                  disabled={state.status !== "ready" || ocrLoading || (health?.ocrEnabled === false)}
                 >
                   {ocrLoading ? "推定中..." : "向き推定"}
                 </button>
+                {ocrLoading && (ocrProgress?.total ?? 0) > 1 && (
+                  <button type="button" onClick={handleAbortOcr}>
+                    処理中止
+                  </button>
+                )}
                 <button
-                  onClick={handleApplySuggestion}
-                  disabled={
-                    state.status !== "ready"
-                    || !ocrSuggestion
-                    || ocrSuggestion.rotation === null
-                    || ocrSuggestion.page !== state.currentPage
-                  }
+                  type="button"
+                  onClick={handleResumeOcr}
+                  disabled={!ocrResumeInfo || ocrLoading || state.status !== "ready" || (health?.ocrEnabled === false)}
                 >
-                  提案を適用
+                  処理再開
                 </button>
               </div>
+              <label className="toggle-row">
+                <input
+                  type="checkbox"
+                  checked={continuousRotationEnabled}
+                  onChange={(event) => setContinuousRotationEnabled(event.target.checked)}
+                  disabled={ocrLoading}
+                />
+                連続回転を有効化
+                <span className="toggle-row__field">
+                  <span className="label inline">基準</span>
+                  <input
+                    className="number-input number-input--compact"
+                    type="number"
+                    min={0}
+                    max={1}
+                    step={0.01}
+                    value={continuousRotationThreshold}
+                    onChange={(event) => {
+                      const next = Number(event.target.value);
+                      if (!Number.isFinite(next)) return;
+                      setContinuousRotationThreshold(Math.min(1, Math.max(0, next)));
+                    }}
+                    disabled={ocrLoading}
+                  />
+                </span>
+              </label>
               <div className="ocr-status">
                 <div className="ocr-summary">
                   <span className="label inline">推定</span>
@@ -479,60 +1019,111 @@ function App() {
                   {ocrSuggestion?.processingMs !== undefined && (
                     <span className="pill pill--render">処理 {ocrSuggestion.processingMs}ms</span>
                   )}
+                  {ocrProgress && (
+                    <span className="pill pill--render">
+                      {ocrProgress.current}/{ocrProgress.total}（{ocrProgress.page}ページ）
+                    </span>
+                  )}
                 </div>
-                <p className="hint">現在のページを画像化し、サーバーで向きを推定します（しきい値 {ocrThreshold}）。</p>
+                {health?.ocrEnabled === false ? (
+                  <p className="hint">OCRが無効化されています（`OCR_ENABLED=false`）。</p>
+                ) : (
+                  <p className="hint">
+                    PDF読み込み時に全ページを自動推定し、必要なら回転を適用します。基準値を設定して連続回転を有効化すると、高確度で同じ方向へ回転するページの間が全て同じ方向に自動回転します。
+                  </p>
+                )}
                 {ocrSuggestion && <p className="hint">推定対象ページ: {ocrSuggestion.page}</p>}
+                {!ocrLoading && ocrCompleteMessage && <p className="hint">{ocrCompleteMessage}</p>}
                 {ocrError && <span className="error-text">{ocrError}</span>}
               </div>
             </div>
             <div className="controls__group">
               <p className="label">回転</p>
               <div className="button-row">
-                <button onClick={() => rotateCurrentPage(-90)} disabled={state.status !== "ready"}>
-                  -90°
+                <button onClick={() => rotateSelectedPages(-90)} disabled={state.status !== "ready" || selectedPages.length === 0}>
+                  選択を-90°
                 </button>
-                <button onClick={() => rotateCurrentPage(90)} disabled={state.status !== "ready"}>
-                  +90°
-                </button>
-              </div>
-            </div>
-            <div className="controls__group">
-              <p className="label">ズーム</p>
-              <div className="button-row">
-                <button onClick={() => setZoom(state.zoom - 0.25)} disabled={state.status === "idle"}>
-                  -
-                </button>
-                <span className="page-indicator">{state.zoom.toFixed(2)}x</span>
-                <button onClick={() => setZoom(state.zoom + 0.25)} disabled={state.status === "idle"}>
-                  +
+                <button onClick={() => rotateSelectedPages(90)} disabled={state.status !== "ready" || selectedPages.length === 0}>
+                  選択を+90°
                 </button>
               </div>
             </div>
           </section>
 
-          <section className="panel shortcuts">
-            <p className="label">ショートカット</p>
-            <div className="shortcut-grid">
-              <div className="shortcut-card">
-                <span className="kbd">→</span>
-                <span>+90° 回転して次ページ</span>
-              </div>
-              <div className="shortcut-card">
-                <span className="kbd">←</span>
-                <span>-90° 回転して次ページ</span>
-              </div>
-              <div className="shortcut-card">
-                <span className="kbd">↓ / ↑</span>
-                <span>ページ移動</span>
-              </div>
-              <div className="shortcut-card">
-                <span className="kbd">Ctrl/Cmd + S</span>
-                <span>回転を適用して保存</span>
-              </div>
-            </div>
-          </section>
+          <ShortcutsPanel />
         </div>
       </div>
+
+      <Footer version={versionText} />
+
+      {toastText && (
+        <div className="toast" role="status" aria-label="通知">
+          <span>{toastText}</span>
+          <button type="button" onClick={() => { setMessage(null); setOcrError(null); }}>
+            閉じる
+          </button>
+        </div>
+      )}
+
+      {helpOpen && (
+        <div className="modal" role="dialog" aria-modal="true" aria-label="ヘルプ">
+          <div className="modal__backdrop" onClick={() => setHelpOpen(false)} />
+          <div className="modal__card" ref={helpModalRef}>
+            <div className="modal__header">
+              <h2>ヘルプ</h2>
+              <button type="button" onClick={() => setHelpOpen(false)} aria-label="閉じる">
+                ×
+              </button>
+            </div>
+            <div className="modal__body">
+              <p className="hint">
+                PDFはブラウザ内で処理します。PDF読み込み時の自動OCRと手動実行時のみ、ページ画像をサーバへ送信します。
+              </p>
+              <p className="label">ショートカット</p>
+              <ul className="help-list">
+                <li>Ctrl/Cmd + →: +90° 回転</li>
+                <li>Ctrl/Cmd + ←: -90° 回転</li>
+                <li>Ctrl/Cmd + ↑/↓: 180° 回転</li>
+                <li>Ctrl/Cmd + S: 回転を適用して保存</li>
+                <li>Esc: 選択解除</li>
+                <li>ダブルクリック: 拡大表示</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      )}
+      {previewPage !== null && (
+        <div
+          className="modal"
+          role="dialog"
+          aria-modal="true"
+          aria-label="プレビュー"
+          onDragEnter={handleDragEnter}
+          onDragOver={(event) => event.preventDefault()}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+        >
+          <div className="modal__backdrop" onClick={() => setPreviewPage(null)} />
+          <div className="modal__card modal__card--preview" ref={previewModalRef}>
+            <div className="modal__header">
+              <h2>プレビュー p.{previewPage}</h2>
+              <button type="button" onClick={() => setPreviewPage(null)} aria-label="閉じる">
+                ×
+              </button>
+            </div>
+            <div className="modal__body preview-body">
+              {renderState === "rendering" && (
+                <span className="pill pill--render" role="status" aria-label="描画中">
+                  描画中...
+                </span>
+              )}
+              <div className="preview-canvas">
+                <canvas ref={previewCanvasRef} />
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
