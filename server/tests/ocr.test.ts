@@ -1,8 +1,9 @@
 import request from "supertest";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { AppConfig } from "../src/app";
 import { createApp } from "../src/app";
 import type { OrientationDetector } from "../src/services/orientation";
+import type { Logger } from "winston";
 
 const samplePngBase64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO2WY5wAAAAASUVORK5CYII=";
@@ -21,6 +22,13 @@ const buildApp = (
     },
   });
 };
+
+const createMockLogger = (): Logger =>
+  ({
+    info: () => undefined,
+    warn: () => undefined,
+    error: () => undefined,
+  } as Logger);
 
 describe("POST /api/ocr/orientation", () => {
   it("OCRが無効化されている場合は503を返す", async () => {
@@ -95,12 +103,13 @@ describe("POST /api/ocr/orientation", () => {
 
     const res = await request(app)
       .post("/api/ocr/orientation")
-      .send({ imageBase64: samplePngBase64, threshold: 0.8 });
+      .send({ imageBase64: samplePngBase64 });
 
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
     expect(res.body.rotation).toBeNull();
     expect(res.body.confidence).toBeCloseTo(0.5);
+    expect(res.body.likelihood).toBeCloseTo(0.5);
     expect(typeof res.body.processingMs).toBe("number");
   });
 
@@ -123,9 +132,78 @@ describe("POST /api/ocr/orientation", () => {
       success: true,
       rotation: 90,
       confidence: 0.92,
+      likelihood: 0.92,
       textSample: "SAMPLE",
     });
     expect(typeof res.body.processingMs).toBe("number");
+  });
+
+  it("OCR成功時にリクエストログを出力する", async () => {
+    const detector: OrientationDetector = {
+      detect: async () => ({
+        rotation: 90,
+        confidence: 0.92,
+        textSample: "SAMPLE",
+      }),
+    };
+    const app = buildApp(detector);
+    const logger = createMockLogger();
+    logger.info = vi.fn();
+    app.locals.logger = logger;
+
+    const res = await request(app)
+      .post("/api/ocr/orientation")
+      .send({ imageBase64: samplePngBase64 });
+
+    expect(res.status).toBe(200);
+    expect(logger.info).toHaveBeenCalledWith(
+      "ocr_request_start",
+      expect.objectContaining({
+        requestId: expect.any(String),
+        threshold: 0.6,
+      })
+    );
+    expect(logger.info).toHaveBeenCalledWith(
+      "ocr_request_completed",
+      expect.objectContaining({
+        requestId: expect.any(String),
+        durationMs: expect.any(Number),
+        confidence: 0.92,
+      })
+    );
+  });
+
+  it("OCRタイムアウト時に失敗ログを出力する", async () => {
+    const detector: OrientationDetector = {
+      detect: async () =>
+        new Promise((resolve) =>
+          setTimeout(
+            () =>
+              resolve({
+                rotation: 0,
+                confidence: 0.9,
+              }),
+            30
+          )
+        ),
+    };
+    const app = buildApp(detector, { ocrTimeoutMs: 5 });
+    const logger = createMockLogger();
+    logger.warn = vi.fn();
+    app.locals.logger = logger;
+
+    const res = await request(app)
+      .post("/api/ocr/orientation")
+      .send({ imageBase64: samplePngBase64 });
+
+    expect(res.status).toBe(504);
+    expect(logger.warn).toHaveBeenCalledWith(
+      "ocr_request_failed",
+      expect.objectContaining({
+        requestId: expect.any(String),
+        code: "ocr_timeout",
+      })
+    );
   });
 
   it("50MBを超える画像は413とリトライ可能フラグを返す", async () => {

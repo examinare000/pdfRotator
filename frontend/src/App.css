@@ -592,10 +592,19 @@ button:disabled {
   box-shadow: var(--shadow-sm);
 }
 
+.thumb-card.is-rotated {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent) inset, var(--shadow-sm);
+}
+
 .thumb-card.is-selected {
   border-color: var(--accent);
   box-shadow: var(--shadow-md);
   background: var(--accent-muted);
+}
+
+.thumb-card.is-selected.is-rotated {
+  box-shadow: 0 0 0 1px var(--accent) inset, var(--shadow-md);
 }
 
 .thumb-canvas {

@@ -79,6 +79,12 @@ const createMockPdfDoc = (numPages = 1): PdfDocumentProxy => ({
   getPage: vi.fn(async () => createMockPage()),
 });
 
+const waitForAutoOcr = async (expectedCalls: number) => {
+  if (expectedCalls <= 0) return;
+  await waitFor(() => expect(mockDetectOrientationForPage).toHaveBeenCalledTimes(expectedCalls));
+  mockDetectOrientationForPage.mockClear();
+};
+
 const makeViewerHook = (override?: {
   state?: MockViewerState;
   loadFromArrayBuffer?: () => Promise<void>;
@@ -102,6 +108,14 @@ const makeViewerHook = (override?: {
 describe("App", () => {
   beforeEach(() => {
     mockDetectOrientationForPage.mockReset();
+    mockDetectOrientationForPage.mockImplementation(async (_doc: unknown, page: number) => ({
+      page,
+      rotation: null,
+      confidence: 0,
+      processingMs: 1,
+      success: true,
+      viewport: { width: 100, height: 100 },
+    }));
     mockUseViewerState.mockReset();
     mockCreatePdfJsDistLoader.mockReset();
     mockCreatePdfJsDistLoader.mockReturnValue({ loadFromArrayBuffer: vi.fn() });
@@ -202,7 +216,32 @@ describe("App", () => {
     expect(screen.getByRole("button", { name: "向き推定" })).toBeDisabled();
   });
 
-  it("OCRしきい値を指定して向き推定を実行できる", async () => {
+  it("PDF読み込み時に全ページの向き推定を自動実行する", async () => {
+    mockUseViewerState.mockReturnValue(
+      makeViewerHook({
+        state: makeState({ status: "ready", numPages: 3, currentPage: 1, pdfDoc: createMockPdfDoc(3) }),
+      })
+    );
+
+    render(<App />);
+
+    await waitFor(() => expect(mockDetectOrientationForPage).toHaveBeenCalledTimes(3));
+    expect(mockDetectOrientationForPage.mock.calls[0][1]).toBe(1);
+    expect(mockDetectOrientationForPage.mock.calls[1][1]).toBe(2);
+    expect(mockDetectOrientationForPage.mock.calls[2][1]).toBe(3);
+  });
+
+  it("向き推定を実行できる", async () => {
+    mockUseViewerState.mockReturnValue(
+      makeViewerHook({
+        state: makeState({ status: "ready", numPages: 1, currentPage: 1, pdfDoc: createMockPdfDoc() }),
+      })
+    );
+
+    render(<App />);
+    const user = userEvent.setup();
+    await waitForAutoOcr(1);
+
     mockDetectOrientationForPage.mockResolvedValue({
       page: 1,
       rotation: 90,
@@ -212,25 +251,30 @@ describe("App", () => {
       viewport: { width: 100, height: 100 },
     });
 
-    mockUseViewerState.mockReturnValue(
-      makeViewerHook({
-        state: makeState({ status: "ready", numPages: 1, currentPage: 1, pdfDoc: createMockPdfDoc() }),
-      })
-    );
-
-    render(<App />);
-    const user = userEvent.setup();
-
-    await user.clear(screen.getByLabelText("OCR信頼度しきい値"));
-    await user.type(screen.getByLabelText("OCR信頼度しきい値"), "0.8");
     await user.click(screen.getByRole("button", { name: "向き推定" }));
 
     await waitFor(() => expect(mockDetectOrientationForPage).toHaveBeenCalledTimes(1));
     const [, , options] = mockDetectOrientationForPage.mock.calls[0];
-    expect(options).toMatchObject({ threshold: 0.8 });
+    expect(options).toMatchObject({});
   });
 
   it("向き推定ボタンで全ページを推定して提案を自動適用する", async () => {
+    const viewerHook = makeViewerHook({
+      state: makeState({
+        status: "ready",
+        numPages: 3,
+        currentPage: 2,
+        pdfDoc: createMockPdfDoc(),
+        rotationMap: { 1: 90 },
+      }),
+    });
+
+    mockUseViewerState.mockReturnValue(viewerHook);
+
+    render(<App />);
+    const user = userEvent.setup();
+    await waitForAutoOcr(3);
+
     mockDetectOrientationForPage
       .mockResolvedValueOnce({
         page: 1,
@@ -257,21 +301,6 @@ describe("App", () => {
         viewport: { width: 100, height: 100 },
       });
 
-    const viewerHook = makeViewerHook({
-      state: makeState({
-        status: "ready",
-        numPages: 3,
-        currentPage: 2,
-        pdfDoc: createMockPdfDoc(),
-        rotationMap: { 1: 90 },
-      }),
-    });
-
-    mockUseViewerState.mockReturnValue(viewerHook);
-
-    render(<App />);
-    const user = userEvent.setup();
-
     await user.click(screen.getByRole("button", { name: "向き推定" }));
 
     await waitFor(() => expect(mockDetectOrientationForPage).toHaveBeenCalledTimes(3));
@@ -285,6 +314,23 @@ describe("App", () => {
   });
 
   it("選択ページがある場合はそのページのみ向き推定する", async () => {
+    const viewerHook = makeViewerHook({
+      state: makeState({
+        status: "ready",
+        numPages: 4,
+        currentPage: 1,
+        pdfDoc: createMockPdfDoc(),
+        rotationMap: { 2: 90 },
+        selectedPages: [],
+      }),
+    });
+
+    mockUseViewerState.mockReturnValue(viewerHook);
+
+    render(<App />);
+    const user = userEvent.setup();
+    await waitForAutoOcr(4);
+
     mockDetectOrientationForPage
       .mockResolvedValueOnce({
         page: 2,
@@ -302,22 +348,6 @@ describe("App", () => {
         success: true,
         viewport: { width: 100, height: 100 },
       });
-
-    const viewerHook = makeViewerHook({
-      state: makeState({
-        status: "ready",
-        numPages: 4,
-        currentPage: 1,
-        pdfDoc: createMockPdfDoc(),
-        rotationMap: { 2: 90 },
-        selectedPages: [],
-      }),
-    });
-
-    mockUseViewerState.mockReturnValue(viewerHook);
-
-    render(<App />);
-    const user = userEvent.setup();
 
     fireEvent.pointerDown(screen.getByRole("button", { name: "ページ 2" }), { button: 0 });
     fireEvent.pointerDown(screen.getByRole("button", { name: "ページ 4" }), { button: 0 });
@@ -367,10 +397,10 @@ describe("App", () => {
 
     await waitFor(() => expect(mockFetchHealth).toHaveBeenCalled());
     fireEvent.pointerDown(screen.getByRole("button", { name: "ページ 1" }), { button: 0 });
-    const thresholdInput = screen.getByLabelText("OCR信頼度しきい値");
-    thresholdInput.focus();
+    const fileInput = screen.getByLabelText("ファイルを選択");
+    fileInput.focus();
 
-    fireEvent.keyDown(thresholdInput, { key: "ArrowRight", ctrlKey: true });
+    fireEvent.keyDown(fileInput, { key: "ArrowRight", ctrlKey: true });
     expect(viewerHook.rotatePage).not.toHaveBeenCalled();
   });
 

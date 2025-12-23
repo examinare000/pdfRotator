@@ -79,8 +79,8 @@
   - `GET /api/health` → 200 `{ status, version }`
   - `POST /api/ocr/orientation`
     - Content-Type: `multipart/form-data` フィールド名 `file`（PNG/JPEG、50MB以内）、または `application/json` `{ imageBase64 }`
-    - Query/Body: `threshold` (0-1, optional; default 0.6)。閾値未達なら rotation を `null` にする。
-    - Response 200: `{ success: true, rotation: 0|90|180|270|null, confidence: number, textSample?: string, processingMs: number }`
+    - Query/Body: `threshold` (0-1, optional)。※現在は使用せず、固定尤度0.6で判定する。
+    - Response 200: `{ success: true, rotation: 0|90|180|270|null, confidence: number, likelihood: number, textSample?: string, processingMs: number }`
     - 400: バリデーションエラー（画像未提供/非対応MIME/Base64不正/閾値不正）
     - 413: ファイルサイズ超過
     - 503: `OCR_ENABLED=false` で機能無効
@@ -95,11 +95,11 @@
 - OCR処理
   - `OCR_ENABLED=false` なら 503 を返す。
 - タイムアウト: `OCR_TIMEOUT_MS`（例:1500ms）で `Promise.race`。504で応答。
-- 優先戦略: ページ番号トークンのスイープ検出。
-  - 0/90/180/270 の各回転で `recognize` し、周辺（余白）にある数字トークンのスコア最大の回転を採用（confidence は比率）。
+- 優先戦略: ページ下端（底辺）1/8領域のページ番号検出。
+  - 短辺/長辺の各辺が底辺になるように 0/90/180/270 で `recognize` し、底辺1/8領域の数字トークン認識精度（Accuracy）最大の回転を採用。
 - 次点戦略: `Tesseract.detect(buffer)` → `orientation_degrees` を 90 度単位に正規化、`orientation_confidence` を返却。
 - `textSample` はベストエフォート（タイムアウトで打ち切り）で、`OCR_TEXT_SAMPLE_ENABLED` / `OCR_TEXT_SAMPLE_TIMEOUT_MS` で制御する。
-- 信頼度 < threshold の場合は `rotation: null` で返す。
+- 尤度 < 0.6 の場合は `rotation: null` で返す。
 - 画像はメモリ上でのみ保持し、保存しない。multer メモリストレージを使用。Base64 とファイルで同じバリデーションを共有。
 - ロギング
   - リクエストID（`x-request-id` が無ければ生成）
@@ -110,7 +110,7 @@
 - 静的配信: `server/public` を `express.static` で配信し、非APIパスは `index.html` を返す（SPAフォールバック）。
 - 配布: `scripts/package-win.ps1` により `frontend` をビルドし `server/public` に配置、`server` をビルド、必要なランタイムを `release/pdfrotator-win64.zip` にまとめる。node.exe は既定で同梱され、利用者は解凍して `start.cmd` を実行するだけで起動（配布先で Node.js 不要）。node.exe を同梱しない場合は `-NoNode` を使用する。
 - 設定: `STATIC_DIR` 環境変数で静的配信パスを上書き可能（未設定時は `server/public`）。OCR設定は `OCR_ENABLED`, `OCR_TIMEOUT_MS`, `OCR_TEXT_SAMPLE_ENABLED`, `OCR_TEXT_SAMPLE_TIMEOUT_MS`, `CORS_ORIGIN` を使用。
-  - `OCR_TIMEOUT_MS` は環境依存で調整する（目安: 8000ms）。重い環境ではより長くする。
+  - `OCR_TIMEOUT_MS` は環境依存で調整する（目安: 15000ms）。重い環境ではより長くする。
 
 ## 7. PDF処理・保存ロジック（フロント）
 - 保存手順

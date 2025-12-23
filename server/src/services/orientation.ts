@@ -60,7 +60,7 @@ const normalizeTextSample = (text: string | null | undefined): string | undefine
 };
 
 const MIN_WORD_CONFIDENCE = 60;
-const PERIMETER_MARGIN_RATIO = 0.12;
+const BOTTOM_STRIP_RATIO = 1 / 8;
 
 type BoundingBox = { x0: number; y0: number; x1: number; y1: number };
 
@@ -142,38 +142,43 @@ const splitAlnumTokens = (text: string): string[] => {
 
 const hasDigit = (text: string): boolean => /\d/.test(text);
 
-const isWithinPerimeter = (
-  bbox: BoundingBox,
-  width: number,
-  height: number
-): boolean => {
-  const margin = Math.min(width, height) * PERIMETER_MARGIN_RATIO;
-  return (
-    bbox.x0 <= margin ||
-    bbox.y0 <= margin ||
-    bbox.x1 >= width - margin ||
-    bbox.y1 >= height - margin
-  );
+const isWithinBottomStrip = (bbox: BoundingBox, height: number): boolean => {
+  const stripTop = height * (1 - BOTTOM_STRIP_RATIO);
+  return bbox.y1 >= stripTop;
 };
 
-const scorePageNumberTokens = (
+const normalizeWordConfidence = (confidence: number): number => {
+  if (!Number.isFinite(confidence)) return 0;
+  if (confidence <= 1) {
+    return Math.max(0, Math.min(1, confidence));
+  }
+  return Math.max(0, Math.min(1, confidence / 100));
+};
+
+const isConfidenceAboveThreshold = (confidence: number | null): boolean => {
+  if (confidence === null) return false;
+  const scaled = confidence <= 1 ? confidence * 100 : confidence;
+  return scaled >= MIN_WORD_CONFIDENCE;
+};
+
+const scoreBottomStripPageNumberTokens = (
   data: unknown,
   size: { width: number; height: number } | null
-): { score: number; bestToken?: string } => {
+): { accuracy: number; bestToken?: string } => {
   if (!size) {
-    return { score: 0 };
+    return { accuracy: 0 };
   }
 
   const words = collectWordCandidates(data);
-  let score = 0;
+  let accuracy = 0;
   let bestToken: string | undefined;
-  let bestTokenScore = 0;
+  let bestTokenLength = 0;
 
   for (const word of words) {
-    if (word.confidence !== null && word.confidence < MIN_WORD_CONFIDENCE) {
+    if (!isConfidenceAboveThreshold(word.confidence)) {
       continue;
     }
-    if (!word.bbox || !isWithinPerimeter(word.bbox, size.width, size.height)) {
+    if (!word.bbox || !isWithinBottomStrip(word.bbox, size.height)) {
       continue;
     }
 
@@ -182,16 +187,21 @@ const scorePageNumberTokens = (
       if (!hasDigit(token)) {
         continue;
       }
-      const tokenScore = token.length;
-      score += tokenScore;
-      if (tokenScore > bestTokenScore) {
-        bestTokenScore = tokenScore;
+      const tokenAccuracy = normalizeWordConfidence(word.confidence ?? 0);
+      if (tokenAccuracy > accuracy) {
+        accuracy = tokenAccuracy;
         bestToken = token;
+        bestTokenLength = token.length;
+        continue;
+      }
+      if (tokenAccuracy === accuracy && token.length > bestTokenLength) {
+        bestToken = token;
+        bestTokenLength = token.length;
       }
     }
   }
 
-  return { score, bestToken };
+  return { accuracy, bestToken };
 };
 
 const detectWithPageNumberSweep = async (
@@ -201,8 +211,11 @@ const detectWithPageNumberSweep = async (
   rotateFn: RotateFn
 ): Promise<OrientationResult> => {
   const candidates: Array<Exclude<Orientation, null>> = [0, 90, 180, 270];
-  const counts: Array<{ orientation: Exclude<Orientation, null>; count: number; token?: string }> =
-    [];
+  const counts: Array<{
+    orientation: Exclude<Orientation, null>;
+    accuracy: number;
+    token?: string;
+  }> = [];
 
   for (const orientation of candidates) {
     if (signal?.aborted) {
@@ -213,10 +226,10 @@ const detectWithPageNumberSweep = async (
       const rotatedBuffer = await rotateFn(buffer, orientation);
       const { data } = await recognizeFn(rotatedBuffer);
       const size = await resolveImageSize(data, rotatedBuffer);
-      const { score, bestToken } = scorePageNumberTokens(data, size);
-      counts.push({ orientation, count: score, token: bestToken });
+      const { accuracy, bestToken } = scoreBottomStripPageNumberTokens(data, size);
+      counts.push({ orientation, accuracy, token: bestToken });
     } catch (error) {
-      counts.push({ orientation, count: 0, token: undefined });
+      counts.push({ orientation, accuracy: 0, token: undefined });
       if (process.env.NODE_ENV !== "test") {
         // eslint-disable-next-line no-console
         console.warn("orientation_detect_failed", error);
@@ -224,25 +237,22 @@ const detectWithPageNumberSweep = async (
     }
   }
 
-  const total = counts.reduce((sum, item) => sum + item.count, 0);
-  if (total === 0) {
-    return { rotation: null, confidence: 0 };
-  }
-
   const best = counts.reduce((currentBest, item) => {
-    if (item.count > currentBest.count) {
+    if (item.accuracy > currentBest.accuracy) {
       return item;
     }
-    if (item.count === currentBest.count && item.orientation < currentBest.orientation) {
+    if (item.accuracy === currentBest.accuracy && item.orientation < currentBest.orientation) {
       return item;
     }
     return currentBest;
   }, counts[0]);
 
-  const confidence = best.count / total;
+  if (best.accuracy <= 0) {
+    return { rotation: null, confidence: 0 };
+  }
   return {
     rotation: best.orientation,
-    confidence,
+    confidence: best.accuracy,
     textSample: normalizeTextSample(best.token),
   };
 };
