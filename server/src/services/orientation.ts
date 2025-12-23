@@ -1,5 +1,6 @@
 import sharp from "sharp";
 import Tesseract from "tesseract.js";
+import { getAppLogger } from "../logger";
 
 export type Orientation = 0 | 90 | 180 | 270 | null;
 
@@ -231,8 +232,7 @@ const detectWithPageNumberSweep = async (
     } catch (error) {
       counts.push({ orientation, accuracy: 0, token: undefined });
       if (process.env.NODE_ENV !== "test") {
-        // eslint-disable-next-line no-console
-        console.warn("orientation_detect_failed", error);
+        getAppLogger()?.warn("orientation_detect_failed", { err: error });
       }
     }
   }
@@ -291,8 +291,7 @@ const detectWithTesseract = async (
       }
     } catch (error) {
       if (process.env.NODE_ENV !== "test") {
-        // eslint-disable-next-line no-console
-        console.warn("text_sample_extraction_failed", error);
+        getAppLogger()?.warn("text_sample_extraction_failed", { err: error });
       }
     }
   }
@@ -339,8 +338,7 @@ export const createTesseractDetector = ({
           return await detectWithTesseract(buffer, signal);
         } catch (error) {
           if (process.env.NODE_ENV !== "test") {
-            // eslint-disable-next-line no-console
-            console.warn("orientation_detect_failed", error);
+            getAppLogger()?.warn("orientation_detect_failed", { err: error });
           }
         }
       }

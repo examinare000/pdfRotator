@@ -34,7 +34,15 @@ export const createApp = ({ detector, config }: CreateAppOptions = {}): Applicat
   );
   app.use(express.json({ limit: BODY_LIMIT }));
   app.use(express.urlencoded({ extended: true, limit: BODY_LIMIT }));
-  app.use(morgan("combined"));
+  app.use(
+    morgan("combined", {
+      stream: {
+        write: (message) => {
+          logger.info("http_request", { message: message.trim() });
+        },
+      },
+    })
+  );
   app.use(
     rateLimit({
       windowMs: 60 * 1000,

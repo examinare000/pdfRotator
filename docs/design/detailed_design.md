@@ -17,6 +17,7 @@
 ## 3. システム構成
 - フロント：React + TypeScript + Vite、PDF.js（レンダリング）、pdf-lib（回転適用・保存）。PDF.js workerは `public/pdf.worker.js` として分離。
 - バックエンド：Express + TypeScript、OCR APIのみ（CORS限定）。ログ: morgan + winston。
+- ログ: サーバは `logs/server.log` / `logs/server-error.log` に出力し、フロントのエラーログも `/api/logs` 経由で同じログに集約する。
 - OCR：Tesseract.js（Node）。入力PNG/JPEG→orientation/confidence→JSON返却。
 - 開発時：Vite dev server（例:5173）は `/api/*` をバックエンド（例:3001）へプロキシして、フロント実装は `/api/...` の相対パスのままにする。
 - 配布・ホスティング：フロントはViteビルド成果物を `server/public` に同梱し、Expressで静的配信+SPAフォールバック。Windows配布は zip 解凍 + `start.cmd` 実行のみで利用可能。

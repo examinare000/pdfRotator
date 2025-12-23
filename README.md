@@ -75,6 +75,10 @@ npm run dev   # http://localhost:5173
   - 出力: `{ success: true, rotation: 0|90|180|270|null, confidence, textSample?, processingMs }`
   - エラー: 400/413/503/504/500 を JSON で返却
 
+## ログ
+- サーバログ: `logs/server.log`（info以上）、`logs/server-error.log`（error）
+- フロントのエラーは `/api/logs` 経由で同じログに集約されます。
+
 ## ビルドと配布
 ```bash
 # ルートから一括ビルド
