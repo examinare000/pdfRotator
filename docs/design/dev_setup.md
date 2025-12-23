@@ -12,6 +12,7 @@
 
 ## フロントエンド（React + Vite + TypeScript）
 - ディレクトリ: `frontend/`
+- 依存: React 19.2.3 / React DOM 19.2.3（更新方針は ADR-007 に準拠）
 - セットアップ: `cd frontend && npm ci`
 - 開発サーバ: `npm run dev`（デフォルト `http://localhost:5173`）
 - ビルド: `npm run build`
