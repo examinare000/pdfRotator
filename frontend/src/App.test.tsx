@@ -448,7 +448,10 @@ describe("App", () => {
         viewport: { width: 100, height: 100 },
       });
 
-    await user.click(screen.getByRole("checkbox", { name: /連続回転/ }));
+    const continuousToggle = screen.getByRole("checkbox", { name: /連続回転/ }) as HTMLInputElement;
+    if (!continuousToggle.checked) {
+      await user.click(continuousToggle);
+    }
     await user.click(screen.getByRole("button", { name: "向き推定" }));
 
     await waitFor(() => expect(mockDetectOrientationForPage).toHaveBeenCalledTimes(3));
@@ -500,7 +503,10 @@ describe("App", () => {
         viewport: { width: 100, height: 100 },
       });
 
-    await user.click(screen.getByRole("checkbox", { name: /連続回転/ }));
+    const continuousToggle = screen.getByRole("checkbox", { name: /連続回転/ }) as HTMLInputElement;
+    if (!continuousToggle.checked) {
+      await user.click(continuousToggle);
+    }
     await user.click(screen.getByRole("button", { name: "向き推定" }));
 
     await waitFor(() => expect(mockDetectOrientationForPage).toHaveBeenCalledTimes(4));

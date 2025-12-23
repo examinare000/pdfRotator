@@ -15,7 +15,7 @@
 - 非機能：100ページ3秒以内初期表示、安全性（XSS/CSRF、依存CVE確認）、主要ブラウザ互換。
 
 ## 3. システム構成
-- フロント：React + TypeScript + Vite、PDF.js（レンダリング）、pdf-lib（回転適用・保存）。PDF.js workerは `public/pdf.worker.js` として分離。
+- フロント：React + TypeScript + Vite、PDF.js（レンダリング）、pdf-lib（回転適用・保存）。PDF.js worker は `pdfjs-dist/build/pdf.worker.min.mjs` を利用する。
 - バックエンド：Express + TypeScript、OCR APIのみ（CORS限定）。ログ: morgan + winston。
 - ログ: サーバは `logs/server.log` / `logs/server-error.log` に出力し、フロントのエラーログも `/api/logs` 経由で同じログに集約する。
 - OCR：Tesseract.js（Node）。入力PNG/JPEG→orientation/confidence→JSON返却。
@@ -56,7 +56,7 @@
   - `ocrSuggestion: { page: number; rotation: 0|90|180|270|null; confidence: number; processingMs?: number } | null`
   - `ui`: { loading: boolean; ocrLoading: boolean; error?: string }
 - PDF.js設定
-  - workerSrc は `public/pdf.worker.js` を使用し、`resolveWorkerSrc` で `BASE_URL` に追従しつつ `GlobalWorkerOptions.workerSrc` を設定。
+  - workerSrc は `pdfjs-dist/build/pdf.worker.min.mjs` を使用し、Vite のアセット解決結果を `GlobalWorkerOptions.workerSrc` に設定する。
   - PDF.js 本体は遅延読み込みし、初期チャンクから分離する。
 - サムネイルは `renderPageToCanvas` で小さく描画し、回転はPDF.js viewportに反映する。仮想スクロールで表示中のページのみ描画する。
   - プレビューは別キャンバスに大きめの上限（例: 900x1200）で描画する。
@@ -145,7 +145,7 @@
 - ブラウザ互換：Chrome/Edge/Safari 最新。PDF.js worker パスが解決しない場合のエラーメッセージを追加。
 
 ## 9. ファイル/設定構成（暫定）
-- `frontend/`: React実装（`components/`, `hooks/`, `lib/pdf`, `styles`）。`public/pdf.worker.js` を配置。
+- `frontend/`: React実装（`components/`, `hooks`, `lib/pdf`, `styles`）。worker は `pdfjs-dist` 付属のものを利用する。
 - `server/`: Express実装（`src/index.ts`, `src/services/ocr.ts`, `src/middlewares/`）。`tsconfig.json`, `.env`.
 - `server/src/handlers`: ルート別ハンドラ（OCR、ログ、ヘルスチェック）。
 - `server/src/utils`: 入力検証、リクエストID生成、タイムアウトなどの共通処理。

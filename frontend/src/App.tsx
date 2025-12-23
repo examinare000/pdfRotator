@@ -94,7 +94,7 @@ function App() {
     threshold: number;
     highConfidenceRotations: Record<number, number>;
   } | null>(null);
-  const [continuousRotationEnabled, setContinuousRotationEnabled] = useState(false);
+  const [continuousRotationEnabled, setContinuousRotationEnabled] = useState(true);
   const [continuousRotationThreshold, setContinuousRotationThreshold] = useState(CONTINUOUS_ROTATION_DEFAULT);
   const [dragging, setDragging] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
@@ -989,6 +989,7 @@ function App() {
               <label className="toggle-row">
                 <input
                   type="checkbox"
+                  name="chkbox-continuous-rotation"
                   checked={continuousRotationEnabled}
                   onChange={(event) => setContinuousRotationEnabled(event.target.checked)}
                   disabled={ocrLoading}
@@ -996,7 +997,7 @@ function App() {
                 連続回転を有効化
                 <span className="toggle-row__field">
                   <span className="label inline">基準</span>
-                  <input
+                  <input name="input-continuous-rotation-threshold"
                     className="number-input number-input--compact"
                     type="number"
                     min={0}
