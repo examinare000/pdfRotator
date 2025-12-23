@@ -40,6 +40,9 @@
   - `ViewerGrid`: サムネイル一覧の描画、選択状態の管理、スクロール領域。
   - `PreviewModal`: ダブルクリック時の拡大プレビュー（Escで閉じる）。
   - `RotateControls`: 選択ページの回転ボタン、選択解除。
+- 共有ユーティリティ
+  - `selection`: 選択ページの正規化ロジック。
+  - `thumb-grid`: サムネイル仮想スクロールの計算。
 - `OrientationPanel`: OCRしきい値入力、推定結果表示（現在選択ページから順番に推定して自動適用）。
   - 連続回転: 同方向の高尤度ページに挟まれたページを同方向で回転。間に高尤度で別方向があれば適用しない。基準尤度は0..1で入力。
   - `ShortcutsPanel`: ショートカットの視覚的な案内。
@@ -53,7 +56,8 @@
   - `ocrSuggestion: { page: number; rotation: 0|90|180|270|null; confidence: number; processingMs?: number } | null`
   - `ui`: { loading: boolean; ocrLoading: boolean; error?: string }
 - PDF.js設定
-  - workerSrc を `public/pdf.worker.js` に配置し、`resolveWorkerSrc` で `BASE_URL` に追従しつつ `GlobalWorkerOptions.workerSrc` を設定。
+  - workerSrc は `public/pdf.worker.js` を使用し、`resolveWorkerSrc` で `BASE_URL` に追従しつつ `GlobalWorkerOptions.workerSrc` を設定。
+  - PDF.js 本体は遅延読み込みし、初期チャンクから分離する。
 - サムネイルは `renderPageToCanvas` で小さく描画し、回転はPDF.js viewportに反映する。仮想スクロールで表示中のページのみ描画する。
   - プレビューは別キャンバスに大きめの上限（例: 900x1200）で描画する。
 - 回転ロジック
@@ -76,6 +80,7 @@
 - パフォーマンス
 - 初期表示：サムネイル一覧を順次描画。仮想スクロールで描画対象を限定し、サムネイルサイズを小さく保つことで描画負荷を抑える。
   - プレビューは必要時のみレンダリングする。
+  - PDF.js 本体・pdf-lib は遅延読み込みし、初期バンドルの肥大化を抑える。
   - キャンバス最大幅/高さを clamp（例: サムネイル 180x240、プレビュー 900x1200）。`renderPageToCanvas` でスケールを自動調整。
   - OCR送信用のPNG生成は `toBlob` を優先し、同期エンコードによるブロッキングを抑える。
   - 100ページPDFで3秒以内を目標に、ファイル読み込み+サムネイル描画の計測を実装（`cd frontend && npm run measure:pages` でサンプルPDF生成と計測を実行。`PAGE_COUNT` 環境変数でページ数を指定可能）。
@@ -107,10 +112,14 @@
 - `textSample` はベストエフォート（タイムアウトで打ち切り）で、`OCR_TEXT_SAMPLE_ENABLED` / `OCR_TEXT_SAMPLE_TIMEOUT_MS` で制御する。
 - 尤度 < 0.6 の場合は `rotation: null` で返す。
 - 画像はメモリ上でのみ保持し、保存しない。multer メモリストレージを使用。Base64 とファイルで同じバリデーションを共有。
-- ロギング
+  - ロギング
   - リクエストID（`x-request-id` が無ければ生成）
   - 正常: method/path/status/duration
   - 失敗: stack はサーバログのみ、レスポンスには汎用メッセージ。
+- 構成方針
+  - ルーティングは薄く保ち、ハンドラに責務を分離する（`routes.ts` → `handlers/*`）。
+  - 入力検証/変換はユーティリティへ切り出し、早期リターンのガード節でネストを浅くする。
+  - 外部依存（OCR検出器など）は注入可能にし、ユニットテストでモックできる構成にする。
 
 ## 6.1 静的配信と配布
 - 静的配信: `server/public` を `express.static` で配信し、非APIパスは `index.html` を返す（SPAフォールバック）。
@@ -138,6 +147,8 @@
 ## 9. ファイル/設定構成（暫定）
 - `frontend/`: React実装（`components/`, `hooks/`, `lib/pdf`, `styles`）。`public/pdf.worker.js` を配置。
 - `server/`: Express実装（`src/index.ts`, `src/services/ocr.ts`, `src/middlewares/`）。`tsconfig.json`, `.env`.
+- `server/src/handlers`: ルート別ハンドラ（OCR、ログ、ヘルスチェック）。
+- `server/src/utils`: 入力検証、リクエストID生成、タイムアウトなどの共通処理。
 - `docs/design/`: 設計/セットアップドキュメント。
 - `.env`（server）: `PORT`, `CORS_ORIGIN`, `OCR_ENABLED`, `OCR_TIMEOUT_MS`, `OCR_TEXT_SAMPLE_ENABLED`, `OCR_TEXT_SAMPLE_TIMEOUT_MS`.
 

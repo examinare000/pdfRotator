@@ -16,6 +16,8 @@ type CreateAppOptions = {
   config?: Partial<AppConfig>;
 };
 
+export type { AppConfig };
+
 export const createApp = ({ detector, config }: CreateAppOptions = {}): Application => {
   const resolvedConfig = buildConfig(config);
   const logger = createAppLogger();

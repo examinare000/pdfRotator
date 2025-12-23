@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent, type PointerEvent } from "react";
 import { createPdfJsDistLoader } from "./lib/pdfjs";
-import workerSrc from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { useViewerState } from "./hooks/useViewerState";
 import { renderPageToCanvas } from "./lib/pdf";
+import { normalizeSelectedPages } from "./lib/selection";
+import { calculateThumbGridWindow } from "./lib/thumb-grid";
 import { savePdfWithRotation } from "./lib/pdf-save";
 import { detectOrientationForPage, type OrientationSuggestion } from "./lib/ocr";
 import { applyRotationChange } from "./lib/rotation";
@@ -21,18 +22,6 @@ const CONTINUOUS_ROTATION_DEFAULT = 0.6;
 
 type RenderState = "idle" | "rendering" | "error";
 type SelectionMode = "add" | "remove";
-
-const normalizeSelectedPages = (pages: number[], numPages: number): number[] => {
-  if (numPages < 1) return [];
-  const uniquePages = new Set<number>();
-  for (const page of pages) {
-    if (!Number.isFinite(page)) continue;
-    const normalized = Math.trunc(page);
-    if (normalized < 1 || normalized > numPages) continue;
-    uniquePages.add(normalized);
-  }
-  return Array.from(uniquePages).sort((a, b) => a - b);
-};
 
 const THUMB_MIN_WIDTH = 140;
 const THUMB_GRID_GAP = 12;
@@ -68,7 +57,7 @@ const readFileAsArrayBuffer = async (file: Blob): Promise<ArrayBuffer> => {
 };
 
 function App() {
-  const pdfLoader = useMemo(() => createPdfJsDistLoader({ workerSrc }), []);
+  const pdfLoader = useMemo(() => createPdfJsDistLoader(), []);
   const {
     state,
     loadFromArrayBuffer,
@@ -299,31 +288,19 @@ function App() {
     }
     const fallbackWidth = typeof window !== "undefined" ? window.innerWidth : 0;
     const fallbackHeight = typeof window !== "undefined" ? window.innerHeight : 0;
-    const containerWidth = gridMetrics.containerWidth || fallbackWidth;
-    const viewportHeight = gridMetrics.viewportHeight || fallbackHeight;
-    const innerWidth = Math.max(0, containerWidth - THUMB_GRID_PADDING * 2);
-    const columns = Math.max(
-      1,
-      Math.floor((innerWidth + THUMB_GRID_GAP) / (THUMB_MIN_WIDTH + THUMB_GRID_GAP))
-    );
-    const rowStride = rowHeight + THUMB_GRID_GAP;
-    const totalRows = Math.ceil(state.numPages / columns);
-    const startRow = Math.max(0, Math.floor(gridMetrics.scrollTop / rowStride) - THUMB_ROW_BUFFER);
-    const endRow = Math.min(
-      totalRows - 1,
-      Math.floor((gridMetrics.scrollTop + viewportHeight) / rowStride) + THUMB_ROW_BUFFER
-    );
-    const startIndex = startRow * columns;
-    const endIndex = Math.min(state.numPages, (endRow + 1) * columns);
-    const pageNumbers = [];
-    for (let index = startIndex; index < endIndex; index += 1) {
-      pageNumbers.push(index + 1);
-    }
-    return {
-      pageNumbers,
-      paddingTop: startRow * rowStride,
-      paddingBottom: Math.max(0, (totalRows - endRow - 1) * rowStride),
-    };
+    return calculateThumbGridWindow({
+      numPages: state.numPages,
+      containerWidth: gridMetrics.containerWidth,
+      viewportHeight: gridMetrics.viewportHeight,
+      scrollTop: gridMetrics.scrollTop,
+      rowHeight,
+      minWidth: THUMB_MIN_WIDTH,
+      gridGap: THUMB_GRID_GAP,
+      gridPadding: THUMB_GRID_PADDING,
+      rowBuffer: THUMB_ROW_BUFFER,
+      fallbackWidth,
+      fallbackHeight,
+    });
   }, [gridMetrics, rowHeight, state.numPages, state.pdfDoc]);
 
   useEffect(() => {
@@ -822,7 +799,9 @@ function App() {
       if (!aborted) {
         setOcrError(text);
         logClient("error", "ocr_detect_failed", { message: text });
-      } else if (ocrRunRef.current && total > 1) {
+        return;
+      }
+      if (ocrRunRef.current && total > 1) {
         setOcrResumeInfo({ ...ocrRunRef.current });
       }
     } finally {
