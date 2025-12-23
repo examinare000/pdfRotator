@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent, type PointerEvent } from "react";
 import { createPdfJsDistLoader } from "./lib/pdfjs";
-import workerSrc from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { useViewerState } from "./hooks/useViewerState";
 import { renderPageToCanvas } from "./lib/pdf";
 import { savePdfWithRotation } from "./lib/pdf-save";
@@ -68,7 +67,7 @@ const readFileAsArrayBuffer = async (file: Blob): Promise<ArrayBuffer> => {
 };
 
 function App() {
-  const pdfLoader = useMemo(() => createPdfJsDistLoader({ workerSrc }), []);
+  const pdfLoader = useMemo(() => createPdfJsDistLoader(), []);
   const {
     state,
     loadFromArrayBuffer,

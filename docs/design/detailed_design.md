@@ -53,7 +53,8 @@
   - `ocrSuggestion: { page: number; rotation: 0|90|180|270|null; confidence: number; processingMs?: number } | null`
   - `ui`: { loading: boolean; ocrLoading: boolean; error?: string }
 - PDF.js設定
-  - workerSrc を `public/pdf.worker.js` に配置し、`resolveWorkerSrc` で `BASE_URL` に追従しつつ `GlobalWorkerOptions.workerSrc` を設定。
+  - workerSrc は `public/pdf.worker.js` を使用し、`resolveWorkerSrc` で `BASE_URL` に追従しつつ `GlobalWorkerOptions.workerSrc` を設定。
+  - PDF.js 本体は遅延読み込みし、初期チャンクから分離する。
 - サムネイルは `renderPageToCanvas` で小さく描画し、回転はPDF.js viewportに反映する。仮想スクロールで表示中のページのみ描画する。
   - プレビューは別キャンバスに大きめの上限（例: 900x1200）で描画する。
 - 回転ロジック
@@ -76,6 +77,7 @@
 - パフォーマンス
 - 初期表示：サムネイル一覧を順次描画。仮想スクロールで描画対象を限定し、サムネイルサイズを小さく保つことで描画負荷を抑える。
   - プレビューは必要時のみレンダリングする。
+  - PDF.js 本体・pdf-lib は遅延読み込みし、初期バンドルの肥大化を抑える。
   - キャンバス最大幅/高さを clamp（例: サムネイル 180x240、プレビュー 900x1200）。`renderPageToCanvas` でスケールを自動調整。
   - OCR送信用のPNG生成は `toBlob` を優先し、同期エンコードによるブロッキングを抑える。
   - 100ページPDFで3秒以内を目標に、ファイル読み込み+サムネイル描画の計測を実装（`cd frontend && npm run measure:pages` でサンプルPDF生成と計測を実行。`PAGE_COUNT` 環境変数でページ数を指定可能）。
