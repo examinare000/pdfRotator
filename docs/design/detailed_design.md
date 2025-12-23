@@ -112,10 +112,14 @@
 - `textSample` はベストエフォート（タイムアウトで打ち切り）で、`OCR_TEXT_SAMPLE_ENABLED` / `OCR_TEXT_SAMPLE_TIMEOUT_MS` で制御する。
 - 尤度 < 0.6 の場合は `rotation: null` で返す。
 - 画像はメモリ上でのみ保持し、保存しない。multer メモリストレージを使用。Base64 とファイルで同じバリデーションを共有。
-- ロギング
+  - ロギング
   - リクエストID（`x-request-id` が無ければ生成）
   - 正常: method/path/status/duration
   - 失敗: stack はサーバログのみ、レスポンスには汎用メッセージ。
+- 構成方針
+  - ルーティングは薄く保ち、ハンドラに責務を分離する（`routes.ts` → `handlers/*`）。
+  - 入力検証/変換はユーティリティへ切り出し、早期リターンのガード節でネストを浅くする。
+  - 外部依存（OCR検出器など）は注入可能にし、ユニットテストでモックできる構成にする。
 
 ## 6.1 静的配信と配布
 - 静的配信: `server/public` を `express.static` で配信し、非APIパスは `index.html` を返す（SPAフォールバック）。
@@ -143,6 +147,8 @@
 ## 9. ファイル/設定構成（暫定）
 - `frontend/`: React実装（`components/`, `hooks/`, `lib/pdf`, `styles`）。`public/pdf.worker.js` を配置。
 - `server/`: Express実装（`src/index.ts`, `src/services/ocr.ts`, `src/middlewares/`）。`tsconfig.json`, `.env`.
+- `server/src/handlers`: ルート別ハンドラ（OCR、ログ、ヘルスチェック）。
+- `server/src/utils`: 入力検証、リクエストID生成、タイムアウトなどの共通処理。
 - `docs/design/`: 設計/セットアップドキュメント。
 - `.env`（server）: `PORT`, `CORS_ORIGIN`, `OCR_ENABLED`, `OCR_TIMEOUT_MS`, `OCR_TEXT_SAMPLE_ENABLED`, `OCR_TEXT_SAMPLE_TIMEOUT_MS`.
 
