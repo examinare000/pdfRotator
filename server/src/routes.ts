@@ -105,5 +105,32 @@ export const createApiRouter = (config: AppConfig, detector: OrientationDetector
     }
   });
 
+  router.post("/logs", (req, res) => {
+    const logger = req.app.locals.logger as Logger | undefined;
+    const body = req.body as {
+      level?: string;
+      message?: string;
+      context?: Record<string, unknown>;
+      timestamp?: string;
+    };
+    const level = body?.level;
+    const message = body?.message;
+    if (!level || typeof level !== "string" || !message || typeof message !== "string") {
+      res.status(400).json({ success: false, message: "invalid log payload" });
+      return;
+    }
+
+    const safeLevel = ["error", "warn", "info", "debug"].includes(level) ? level : "info";
+    logger?.log(safeLevel, "client_log", {
+      message,
+      context: body?.context,
+      timestamp: body?.timestamp,
+      userAgent: req.get("user-agent"),
+      ip: req.ip,
+    });
+
+    res.json({ success: true });
+  });
+
   return router;
 };

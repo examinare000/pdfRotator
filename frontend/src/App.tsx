@@ -7,6 +7,7 @@ import { savePdfWithRotation } from "./lib/pdf-save";
 import { detectOrientationForPage, type OrientationSuggestion } from "./lib/ocr";
 import { applyRotationChange } from "./lib/rotation";
 import { fetchHealth, type HealthInfo } from "./lib/health";
+import { logClient } from "./lib/logger";
 import { Header } from "./components/Header";
 import { Footer } from "./components/Footer";
 import { ShortcutsPanel } from "./components/ShortcutsPanel";
@@ -157,6 +158,7 @@ function App() {
         setRenderState("error");
         const text = error instanceof Error ? error.message : "サムネイルの描画に失敗しました";
         setMessage(text);
+        logClient("error", "thumbnail_render_failed", { message: text });
       });
     },
     [renderThumbnail]
@@ -367,6 +369,7 @@ function App() {
           setRenderState("error");
           const text = error instanceof Error ? error.message : "サムネイルの描画に失敗しました";
           setMessage(text);
+          logClient("error", "thumbnail_render_failed", { message: text });
         }
       }
     };
@@ -436,6 +439,30 @@ function App() {
     return () => {
       window.removeEventListener("pointerup", stopSelecting);
       window.removeEventListener("pointercancel", stopSelecting);
+    };
+  }, []);
+
+  useEffect(() => {
+    const handleError = (event: ErrorEvent) => {
+      logClient("error", "window_error", {
+        message: event.message,
+        filename: event.filename,
+        lineno: event.lineno,
+        colno: event.colno,
+      });
+    };
+    const handleRejection = (event: PromiseRejectionEvent) => {
+      const reason = event.reason;
+      logClient("error", "unhandled_rejection", {
+        message: reason instanceof Error ? reason.message : "unhandled_rejection",
+        stack: reason instanceof Error ? reason.stack : undefined,
+      });
+    };
+    window.addEventListener("error", handleError);
+    window.addEventListener("unhandledrejection", handleRejection);
+    return () => {
+      window.removeEventListener("error", handleError);
+      window.removeEventListener("unhandledrejection", handleRejection);
     };
   }, []);
 
@@ -515,6 +542,7 @@ function App() {
       } catch (error) {
         const text = error instanceof Error ? error.message : "プレビューの描画に失敗しました";
         setMessage(text);
+        logClient("error", "preview_render_failed", { message: text, page: previewPage });
       } finally {
         setRenderState("idle");
       }
@@ -690,6 +718,7 @@ function App() {
     } catch (error) {
       const text = error instanceof Error ? error.message : "OCRの推定に失敗しました";
       setOcrError(text);
+      logClient("error", "ocr_detect_failed", { message: text });
     } finally {
       setOcrLoading(false);
       setOcrProgress(null);
