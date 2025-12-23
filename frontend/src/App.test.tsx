@@ -1,5 +1,5 @@
 import React from "react";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import App from "./App";
@@ -541,11 +541,12 @@ describe("App", () => {
     render(<App />);
 
     await waitFor(() => expect(mockFetchHealth).toHaveBeenCalled());
-    fireEvent.pointerDown(screen.getByRole("button", { name: "ページ 1" }), { button: 0 });
     const fileInput = screen.getByLabelText("ファイルを選択");
-    fileInput.focus();
-
-    fireEvent.keyDown(fileInput, { key: "ArrowRight", ctrlKey: true });
+    await act(async () => {
+      fireEvent.pointerDown(screen.getByRole("button", { name: "ページ 1" }), { button: 0 });
+      fileInput.focus();
+      fireEvent.keyDown(fileInput, { key: "ArrowRight", ctrlKey: true });
+    });
     expect(viewerHook.rotatePage).not.toHaveBeenCalled();
   });
 
