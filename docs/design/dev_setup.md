@@ -39,6 +39,7 @@
 - 生成物: `release/pdfrotator-win64.zip`（解凍後に同梱の `start.cmd` を実行するだけ）
 - 既定: `node.exe` を同梱（配布先に Node.js 不要）
 - オプション: `pwsh ../scripts/package-win.ps1 -NoNode` で node.exe を同梱しない（配布先に Node.js が必要）
+- リリース時は `main` にマージ後、タグ `v1.0.0` を付与してからパッケージを作成する
 
 ## 次にやること（提案）
 1. フロントで PDF.js / pdf-lib を組み込み、回転UIとショートカットを実装。

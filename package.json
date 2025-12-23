@@ -1,7 +1,7 @@
 {
   "name": "pdfrotator",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
   "scripts": {
     "setup": "npm --prefix frontend ci && npm --prefix server ci",
     "build:frontend": "npm --prefix frontend run build",
