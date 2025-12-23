@@ -681,6 +681,7 @@ function App() {
 
     const fetcher: typeof fetch = (input, init) =>
       fetch(input, { ...init, signal: abortController.signal });
+    const pdfDoc = state.pdfDoc;
 
     const resumeInfo = options.resume ?? null;
     const continuousRotation = resumeInfo?.continuousRotation ?? continuousRotationEnabled;
@@ -747,7 +748,7 @@ function App() {
         try {
           const baseScale = runOptions.forceAll ? OCR_AUTO_SCALE : 1;
           const detectWithScale = (scale: number) =>
-            detectOrientationForPage(state.pdfDoc, pageNumber, {
+            detectOrientationForPage(pdfDoc!, pageNumber, {
               fetcher,
               scale,
             });
@@ -988,7 +989,7 @@ function App() {
               <p className="label">OCR向き推定</p>
               <div className="button-row">
                 <button
-                  onClick={handleDetectOrientation}
+                  onClick={() => { void handleDetectOrientation(); }}
                   disabled={state.status !== "ready" || ocrLoading || (health?.ocrEnabled === false)}
                 >
                   {ocrLoading ? "推定中..." : "向き推定"}

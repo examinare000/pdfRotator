@@ -167,7 +167,7 @@ export const detectOrientationFromPage = async (
 
   const requester =
     request ??
-    ((payload: { imageBase64: string; threshold: number }) =>
+    ((payload: { imageBase64: string; threshold?: number }) =>
       requestOrientation(payload.imageBase64, { threshold: payload.threshold }));
 
   const suggestion = await requester({ imageBase64: dataUrl, threshold });
