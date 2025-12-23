@@ -16,6 +16,7 @@ import "./App.css";
 const MAX_FILE_SIZE = 300 * 1024 * 1024; // 300MB
 const OCR_AUTO_SCALE = 0.6;
 const OCR_RETRY_SCALE = 0.45;
+const CONTINUOUS_ROTATION_DEFAULT = 0.6;
 
 type RenderState = "idle" | "rendering" | "error";
 type SelectionMode = "add" | "remove";
@@ -93,6 +94,18 @@ function App() {
   const [ocrError, setOcrError] = useState<string | null>(null);
   const [ocrLoading, setOcrLoading] = useState(false);
   const [ocrProgress, setOcrProgress] = useState<{ current: number; total: number; page: number } | null>(null);
+  const [ocrCompleteMessage, setOcrCompleteMessage] = useState<string | null>(null);
+  const [ocrResumeInfo, setOcrResumeInfo] = useState<{
+    targetPages: number[];
+    options: { forceAll?: boolean };
+    currentIndex: number;
+    continuousRotation: boolean;
+    lastHigh: { page: number; rotation: number } | null;
+    threshold: number;
+    highConfidenceRotations: Record<number, number>;
+  } | null>(null);
+  const [continuousRotationEnabled, setContinuousRotationEnabled] = useState(false);
+  const [continuousRotationThreshold, setContinuousRotationThreshold] = useState(CONTINUOUS_ROTATION_DEFAULT);
   const [dragging, setDragging] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [health, setHealth] = useState<HealthInfo | null>(null);
@@ -105,6 +118,15 @@ function App() {
     containerWidth: 0,
   });
   const ocrAbortRef = useRef<AbortController | null>(null);
+  const ocrRunRef = useRef<{
+    targetPages: number[];
+    options: { forceAll?: boolean };
+    currentIndex: number;
+    continuousRotation: boolean;
+    lastHigh: { page: number; rotation: number } | null;
+    threshold: number;
+    highConfidenceRotations: Record<number, number>;
+  } | null>(null);
   const autoOcrDocRef = useRef<unknown>(null);
   const previewCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const previewRenderQueueRef = useRef<Promise<void>>(Promise.resolve());
@@ -185,6 +207,8 @@ function App() {
     setFileName(file.name);
     setOcrSuggestion(null);
     setOcrError(null);
+    setOcrCompleteMessage(null);
+    setOcrResumeInfo(null);
     try {
       const buffer = await readFileAsArrayBuffer(file);
       await loadFromArrayBuffer(buffer);
@@ -584,6 +608,8 @@ function App() {
     setOcrError(null);
     setOcrLoading(false);
     setOcrProgress(null);
+    setOcrCompleteMessage(null);
+    setOcrResumeInfo(null);
     setRenderState("idle");
     setSelectedPages([]);
     setPreviewPage(null);
@@ -600,7 +626,18 @@ function App() {
     };
   }, []);
 
-  const handleDetectOrientation = useCallback(async (options: { forceAll?: boolean } = {}) => {
+  const handleDetectOrientation = useCallback(async (options: {
+    forceAll?: boolean;
+    resume?: {
+      targetPages: number[];
+      options: { forceAll?: boolean };
+      currentIndex: number;
+      continuousRotation: boolean;
+      lastHigh: { page: number; rotation: number } | null;
+      threshold: number;
+      highConfidenceRotations: Record<number, number>;
+    };
+  } = {}) => {
     if (health && !health.ocrEnabled) {
       setOcrError("OCRは無効化されています");
       return;
@@ -617,24 +654,58 @@ function App() {
     const fetcher: typeof fetch = (input, init) =>
       fetch(input, { ...init, signal: abortController.signal });
 
+    const resumeInfo = options.resume ?? null;
+    const continuousRotation = resumeInfo?.continuousRotation ?? continuousRotationEnabled;
+    const continuousRotationThresholdValue = resumeInfo?.threshold ?? continuousRotationThreshold;
     const normalizedSelection = options.forceAll
       ? []
       : normalizeSelectedPages(selectedPages, state.numPages);
-    const targetPages = normalizedSelection.length > 0
-      ? normalizedSelection
-      : Array.from({ length: state.numPages }, (_, index) => index + 1);
+    const targetPages = resumeInfo?.targetPages
+      ?? (normalizedSelection.length > 0
+        ? normalizedSelection
+        : Array.from({ length: state.numPages }, (_, index) => index + 1));
     const total = targetPages.length;
+    const startIndex = resumeInfo?.currentIndex ?? 0;
+    const runOptions = resumeInfo?.options ?? { forceAll: options.forceAll };
+    let lastHigh = resumeInfo?.lastHigh ?? null;
+    const highConfidenceRotations = { ...(resumeInfo?.highConfidenceRotations ?? {}) };
 
     setOcrLoading(true);
     setOcrError(null);
-    setOcrProgress(total > 0 ? { current: 0, total, page: targetPages[0] } : null);
+    setOcrCompleteMessage(null);
+    setOcrResumeInfo(null);
+    setOcrProgress(
+      total > 0
+        ? { current: Math.min(startIndex, total), total, page: targetPages[Math.min(startIndex, total - 1)] }
+        : null
+    );
 
     try {
       let workingRotationMap = state.rotationMap;
       const errors: Array<{ page: number; message: string }> = [];
+      const targetPagesSet = new Set(targetPages);
+      const applyRotationToPage = (targetPage: number, targetRotation: number) => {
+        const currentRotation = workingRotationMap[targetPage] ?? 0;
+        const delta = targetRotation - currentRotation;
+        if (delta === 0) return;
+        rotatePage(targetPage, delta);
+        workingRotationMap = applyRotationChange(workingRotationMap, targetPage, delta);
+      };
+      ocrRunRef.current = {
+        targetPages,
+        options: runOptions,
+        currentIndex: startIndex,
+        continuousRotation,
+        lastHigh,
+        threshold: continuousRotationThresholdValue,
+        highConfidenceRotations,
+      };
 
-      for (let index = 0; index < targetPages.length; index += 1) {
+      for (let index = startIndex; index < targetPages.length; index += 1) {
         const pageNumber = targetPages[index];
+        if (ocrRunRef.current) {
+          ocrRunRef.current.currentIndex = index;
+        }
         if (abortController.signal.aborted) {
           throw new Error("OCR処理が中断されました");
         }
@@ -646,7 +717,7 @@ function App() {
         });
 
         try {
-          const baseScale = options.forceAll ? OCR_AUTO_SCALE : 1;
+          const baseScale = runOptions.forceAll ? OCR_AUTO_SCALE : 1;
           const detectWithScale = (scale: number) =>
             detectOrientationForPage(state.pdfDoc, pageNumber, {
               fetcher,
@@ -670,14 +741,37 @@ function App() {
             continue;
           }
 
-          const currentRotation = workingRotationMap[pageNumber] ?? 0;
-          const delta = suggestion.rotation - currentRotation;
-          if (delta === 0) {
-            continue;
-          }
+          applyRotationToPage(pageNumber, suggestion.rotation);
 
-          rotatePage(pageNumber, delta);
-          workingRotationMap = applyRotationChange(workingRotationMap, pageNumber, delta);
+          const confidenceValue = suggestion.likelihood ?? suggestion.confidence;
+          if (continuousRotation && confidenceValue >= continuousRotationThresholdValue) {
+            highConfidenceRotations[pageNumber] = suggestion.rotation;
+            if (lastHigh && lastHigh.rotation === suggestion.rotation) {
+              const startPage = lastHigh.page + 1;
+              const endPage = pageNumber - 1;
+              if (startPage <= endPage) {
+                let hasConflict = false;
+                for (let checkPage = startPage; checkPage <= endPage; checkPage += 1) {
+                  const recorded = highConfidenceRotations[checkPage];
+                  if (recorded !== undefined && recorded !== suggestion.rotation) {
+                    hasConflict = true;
+                    break;
+                  }
+                }
+                if (!hasConflict) {
+                  for (let fillPage = startPage; fillPage <= endPage; fillPage += 1) {
+                    if (!targetPagesSet.has(fillPage)) continue;
+                    applyRotationToPage(fillPage, suggestion.rotation);
+                  }
+                }
+              }
+            }
+            lastHigh = { page: pageNumber, rotation: suggestion.rotation };
+            if (ocrRunRef.current) {
+              ocrRunRef.current.lastHigh = lastHigh;
+              ocrRunRef.current.highConfidenceRotations = highConfidenceRotations;
+            }
+          }
         } catch (error) {
           const text = error instanceof Error ? error.message : "OCRの推定に失敗しました";
           errors.push({ page: pageNumber, message: text });
@@ -687,14 +781,39 @@ function App() {
       if (errors.length > 0) {
         setOcrError(`${errors.length}ページでOCRに失敗しました（例: ${errors[0].page}ページ）`);
       }
+      if (total > 1) {
+        const failureSuffix = errors.length > 0 ? `（失敗 ${errors.length}ページ）` : "";
+        setOcrCompleteMessage(`${total}ページの向き推定が完了しました${failureSuffix}`);
+      }
     } catch (error) {
       const text = error instanceof Error ? error.message : "OCRの推定に失敗しました";
-      setOcrError(text);
+      const aborted =
+        text.includes("中断")
+        || (error instanceof DOMException && error.name === "AbortError");
+      if (!aborted) {
+        setOcrError(text);
+      } else if (ocrRunRef.current && total > 1) {
+        setOcrResumeInfo({ ...ocrRunRef.current });
+      }
     } finally {
       setOcrLoading(false);
       setOcrProgress(null);
+      ocrRunRef.current = null;
     }
-  }, [health, rotatePage, selectedPages, state.numPages, state.pdfDoc, state.rotationMap]);
+  }, [continuousRotationEnabled, health, rotatePage, selectedPages, state.numPages, state.pdfDoc, state.rotationMap]);
+
+  const handleAbortOcr = useCallback(() => {
+    if (!ocrLoading || !ocrProgress || ocrProgress.total <= 1) return;
+    ocrAbortRef.current?.abort();
+    if (ocrRunRef.current) {
+      setOcrResumeInfo({ ...ocrRunRef.current });
+    }
+  }, [ocrLoading, ocrProgress]);
+
+  const handleResumeOcr = useCallback(() => {
+    if (!ocrResumeInfo) return;
+    void handleDetectOrientation({ resume: ocrResumeInfo });
+  }, [handleDetectOrientation, ocrResumeInfo]);
 
   useEffect(() => {
     if (!state.pdfDoc || state.status !== "ready") {
@@ -845,7 +964,45 @@ function App() {
                 >
                   {ocrLoading ? "推定中..." : "向き推定"}
                 </button>
+                {ocrLoading && (ocrProgress?.total ?? 0) > 1 && (
+                  <button type="button" onClick={handleAbortOcr}>
+                    処理中止
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={handleResumeOcr}
+                  disabled={!ocrResumeInfo || ocrLoading || state.status !== "ready" || (health?.ocrEnabled === false)}
+                >
+                  処理再開
+                </button>
               </div>
+              <label className="toggle-row">
+                <input
+                  type="checkbox"
+                  checked={continuousRotationEnabled}
+                  onChange={(event) => setContinuousRotationEnabled(event.target.checked)}
+                  disabled={ocrLoading}
+                />
+                連続回転を有効化
+                <span className="toggle-row__field">
+                  <span className="label inline">基準</span>
+                  <input
+                    className="number-input number-input--compact"
+                    type="number"
+                    min={0}
+                    max={1}
+                    step={0.01}
+                    value={continuousRotationThreshold}
+                    onChange={(event) => {
+                      const next = Number(event.target.value);
+                      if (!Number.isFinite(next)) return;
+                      setContinuousRotationThreshold(Math.min(1, Math.max(0, next)));
+                    }}
+                    disabled={ocrLoading}
+                  />
+                </span>
+              </label>
               <div className="ocr-status">
                 <div className="ocr-summary">
                   <span className="label inline">推定</span>
@@ -863,10 +1020,11 @@ function App() {
                   <p className="hint">OCRが無効化されています（`OCR_ENABLED=false`）。</p>
                 ) : (
                   <p className="hint">
-                    PDF読み込み時に全ページを自動推定し、必要なら回転を適用します。手動実行時は選択ページがあればそのページを順番に画像化し、なければ全ページを対象にサーバーで向きを推定して自動適用します。
+                    PDF読み込み時に全ページを自動推定し、必要なら回転を適用します。基準値を設定して連続回転を有効化すると、高確度で同じ方向へ回転するページの間が全て同じ方向に自動回転します。
                   </p>
                 )}
                 {ocrSuggestion && <p className="hint">推定対象ページ: {ocrSuggestion.page}</p>}
+                {!ocrLoading && ocrCompleteMessage && <p className="hint">{ocrCompleteMessage}</p>}
                 {ocrError && <span className="error-text">{ocrError}</span>}
               </div>
             </div>
@@ -926,7 +1084,16 @@ function App() {
         </div>
       )}
       {previewPage !== null && (
-        <div className="modal" role="dialog" aria-modal="true" aria-label="プレビュー">
+        <div
+          className="modal"
+          role="dialog"
+          aria-modal="true"
+          aria-label="プレビュー"
+          onDragEnter={handleDragEnter}
+          onDragOver={(event) => event.preventDefault()}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+        >
           <div className="modal__backdrop" onClick={() => setPreviewPage(null)} />
           <div className="modal__card modal__card--preview" ref={previewModalRef}>
             <div className="modal__header">

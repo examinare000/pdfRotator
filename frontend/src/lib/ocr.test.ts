@@ -25,6 +25,48 @@ describe("renderPageToPng", () => {
       viewport: { width: 320, height: 480 },
     });
   });
+
+  it("toBlob が使える場合は非同期でdata URLを生成する", async () => {
+    const renderMock = vi.fn().mockResolvedValue({ width: 120, height: 240 });
+    const toDataURL = vi.fn().mockReturnValue("data:image/png;base64,FALLBACK");
+    const toBlob = vi.fn((callback: (blob: Blob | null) => void) => {
+      callback(new Blob(["blob"], { type: "image/png" }));
+    });
+    const canvas = {
+      getContext: vi.fn().mockReturnValue({}),
+      toDataURL,
+      toBlob,
+    } as unknown as HTMLCanvasElement;
+    const page = {} as PdfPageProxy;
+    const originalFileReader = globalThis.FileReader;
+
+    class MockFileReader {
+      result: string | null = null;
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      readAsDataURL() {
+        this.result = "data:image/png;base64,FROM_BLOB";
+        if (this.onload) this.onload();
+      }
+    }
+
+    try {
+      globalThis.FileReader = MockFileReader as unknown as typeof FileReader;
+
+      const result = await renderPageToPng(page, {
+        render: renderMock,
+        createCanvas: () => canvas,
+        scale: 1,
+        rotation: 0,
+      });
+
+      expect(toBlob).toHaveBeenCalledTimes(1);
+      expect(toDataURL).not.toHaveBeenCalled();
+      expect(result.dataUrl).toBe("data:image/png;base64,FROM_BLOB");
+    } finally {
+      globalThis.FileReader = originalFileReader;
+    }
+  });
 });
 
 describe("requestOrientation", () => {
