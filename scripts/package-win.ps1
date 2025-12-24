@@ -101,6 +101,11 @@ npm ci --omit=dev
 Assert-LastExitCode "[package] npm ci --omit=dev"
 Pop-Location
 
+# Tesseract.js言語データをコピー（オフライン動作用）
+Write-Host "[package] Tesseract言語データをコピー" -ForegroundColor Green
+Copy-Item (Join-Paths $serverDir "eng.traineddata") $packageDir -Force
+Copy-Item (Join-Paths $serverDir "osd.traineddata") $packageDir -Force
+
 # node.exe は既定で同梱する（配布先で Node.js の別途インストールを不要にする）
 $shouldIncludeNode = $IncludeNode -or (-not $NoNode)
 if ($shouldIncludeNode) {

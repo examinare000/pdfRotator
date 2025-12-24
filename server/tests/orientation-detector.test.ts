@@ -13,7 +13,9 @@ describe("createTesseractDetector", () => {
 
     expect(result.rotation).toBe(0);
     expect(result.confidence).toBeGreaterThan(0);
-    const normalizedText = (result.textSample ?? "").replace(/\s+/g, "").toUpperCase();
-    expect(normalizedText).toContain("UP");
+    // detectWithPageNumberSweepはページ番号（数字）をtextSampleとして返す
+    // テスト画像の下部にある「1」が検出される
+    expect(result.textSample).toBeDefined();
+    expect(result.textSample).toContain("1");
   }, 20000);
 });

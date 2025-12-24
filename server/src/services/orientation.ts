@@ -1,6 +1,60 @@
+import path from "path";
 import sharp from "sharp";
-import Tesseract from "tesseract.js";
+import Tesseract, { createWorker, Worker } from "tesseract.js";
 import { getAppLogger } from "../logger";
+
+// Tesseract.jsワーカーのシングルトン管理
+// オフライン動作のため、言語データはローカルから読み込む
+let tesseractWorker: Worker | null = null;
+let workerInitPromise: Promise<Worker> | null = null;
+
+const resolveLangPath = (): string => {
+  // 環境変数で上書き可能（テストやカスタム配置用）
+  if (process.env.TESSERACT_LANG_PATH) {
+    return process.env.TESSERACT_LANG_PATH;
+  }
+  // 開発時: server/src/services/ → server/
+  // 配布時: dist/ → ../（ルートディレクトリ）
+  // __dirnameはコンパイル後のdist/services/を指すため、../../でルートに到達
+  return path.resolve(__dirname, "../../");
+};
+
+const getTesseractWorker = async (): Promise<Worker> => {
+  if (tesseractWorker) {
+    return tesseractWorker;
+  }
+
+  if (workerInitPromise) {
+    return workerInitPromise;
+  }
+
+  workerInitPromise = (async () => {
+    const langPath = resolveLangPath();
+    getAppLogger()?.info("tesseract_worker_init", { langPath });
+
+    // OEM=1: LSTMエンジン（高精度、現在の言語データに対応）
+    // 注: detect()（OSD）はレガシーエンジンが必要だが、
+    //     メインの検出方法detectWithPageNumberSweepはrecognize()を使用
+    const worker = await createWorker("eng", 1, {
+      langPath,
+      gzip: false, // ローカルファイルは非圧縮
+    });
+
+    tesseractWorker = worker;
+    return worker;
+  })();
+
+  return workerInitPromise;
+};
+
+// テスト用: ワーカーをリセット
+export const resetTesseractWorker = async (): Promise<void> => {
+  if (tesseractWorker) {
+    await tesseractWorker.terminate();
+    tesseractWorker = null;
+  }
+  workerInitPromise = null;
+};
 
 export type Orientation = 0 | 90 | 180 | 270 | null;
 
@@ -113,25 +167,56 @@ const collectWordCandidates = (data: unknown): Array<{
   const record = data && typeof data === "object" ? (data as Record<string, unknown>) : null;
   if (!record) return [];
 
-  const rawWords = Array.isArray(record.words)
-    ? record.words
-    : Array.isArray(record.lines)
-      ? record.lines
-      : [];
-
   const words: Array<{ text: string; confidence: number | null; bbox: BoundingBox | null }> = [];
-  for (const rawWord of rawWords) {
+
+  const addWord = (rawWord: unknown) => {
     const word = rawWord && typeof rawWord === "object" ? (rawWord as Record<string, unknown>) : null;
-    if (!word) continue;
+    if (!word) return;
 
     const text = typeof word.text === "string" ? word.text.trim() : "";
-    if (!text) continue;
+    if (!text) return;
 
     const confidenceValue = toFiniteNumber(word.confidence);
     const confidence = confidenceValue === null ? null : confidenceValue;
     const bbox = parseBoundingBox(word.bbox);
 
     words.push({ text, confidence, bbox });
+  };
+
+  // Tesseract.js v7: ネストされた構造からwordsを抽出
+  // blocks[].paragraphs[].lines[].words[]
+  if (Array.isArray(record.blocks)) {
+    for (const block of record.blocks) {
+      const blockRecord = block && typeof block === "object" ? (block as Record<string, unknown>) : null;
+      if (!blockRecord || !Array.isArray(blockRecord.paragraphs)) continue;
+
+      for (const paragraph of blockRecord.paragraphs) {
+        const paraRecord = paragraph && typeof paragraph === "object" ? (paragraph as Record<string, unknown>) : null;
+        if (!paraRecord || !Array.isArray(paraRecord.lines)) continue;
+
+        for (const line of paraRecord.lines) {
+          const lineRecord = line && typeof line === "object" ? (line as Record<string, unknown>) : null;
+          if (!lineRecord || !Array.isArray(lineRecord.words)) continue;
+
+          for (const word of lineRecord.words) {
+            addWord(word);
+          }
+        }
+      }
+    }
+  }
+
+  // フォールバック: 旧形式（data.wordsまたはdata.lines）
+  if (words.length === 0) {
+    const rawWords = Array.isArray(record.words)
+      ? record.words
+      : Array.isArray(record.lines)
+        ? record.lines
+        : [];
+
+    for (const rawWord of rawWords) {
+      addWord(rawWord);
+    }
   }
 
   return words;
@@ -264,9 +349,25 @@ const detectWithTesseract = async (
   if (signal?.aborted) {
     throw new Error("OCR処理が中断されました");
   }
-  const { data } = await Tesseract.detect(buffer);
-  const rotation = normalizeRotation(data?.orientation_degrees ?? null);
-  const confidence = data?.orientation_confidence ?? 0;
+
+  const worker = await getTesseractWorker();
+
+  // detect()（OSD）はレガシーエンジンが必要
+  // LSTMのみの言語データでは動作しないため、エラーをキャッチして
+  // recognize()のみでテキストサンプルを抽出する
+  let rotation: Orientation = null;
+  let confidence = 0;
+
+  try {
+    const { data } = await worker.detect(buffer);
+    rotation = normalizeRotation(data?.orientation_degrees ?? null);
+    confidence = data?.orientation_confidence ?? 0;
+  } catch (error) {
+    // OSDが使用できない場合（レガシーエンジンなし）、回転は検出せずテキストサンプルのみ抽出
+    if (process.env.NODE_ENV !== "test") {
+      getAppLogger()?.debug("osd_not_available", { err: error });
+    }
+  }
 
   const isTestEnv = process.env.NODE_ENV === "test";
   const textSampleTimeoutMs = isTestEnv
@@ -281,7 +382,7 @@ const detectWithTesseract = async (
   if (shouldExtractTextSample) {
     try {
       const targetBuffer = rotation ? await sharp(buffer).rotate(rotation).toBuffer() : buffer;
-      const ocrPromise = Tesseract.recognize(targetBuffer);
+      const ocrPromise = worker.recognize(targetBuffer);
       const result = await Promise.race([
         ocrPromise,
         new Promise<null>((resolve) => setTimeout(() => resolve(null), textSampleTimeoutMs)),
@@ -306,7 +407,9 @@ export const createTesseractDetector = ({
   const recognizeFn: RecognizeFn =
     recognize ??
     (async (buffer: Buffer) => {
-      return await Tesseract.recognize(buffer);
+      const worker = await getTesseractWorker();
+      // blocks: trueでネストされた構造（words含む）を取得
+      return await worker.recognize(buffer, {}, { blocks: true });
     });
 
   const rotateFn: RotateFn =
