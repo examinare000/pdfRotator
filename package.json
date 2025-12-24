@@ -1,7 +1,7 @@
 {
   "name": "pdfrotator",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.1.0",
   "scripts": {
     "setup": "npm --prefix frontend ci && npm --prefix server ci",
     "build:frontend": "npm --prefix frontend run build",
@@ -14,5 +14,8 @@
     "dev:frontend": "npm --prefix frontend run dev",
     "dev:server": "npm --prefix server run dev",
     "dev": "node scripts/dev.mjs"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-code": "^2.0.76"
   }
 }
